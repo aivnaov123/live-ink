@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import type { Rng } from './DailySeed';
 import type { Theme } from '../theme';
+import { TEX } from '../res';
 
 const DEPTH = 700;     // platforms are tall pillars (top surface + body below)
 const MIN_Y = 420;
@@ -46,7 +47,8 @@ export class LevelGenerator {
   private nextX = -200;
   private lastY = 700;
   /** Debug/testing: force one pattern (set window.__LIVEINK_FORCE = 'moving'). */
-  private force?: PatternId = (window as unknown as { __LIVEINK_FORCE?: PatternId }).__LIVEINK_FORCE;
+  private force?: PatternId = location.protocol === 'file:' || location.search.includes('debug')
+    ? (window as unknown as { __LIVEINK_FORCE?: PatternId }).__LIVEINK_FORCE : undefined;
 
   constructor(private scene: Phaser.Scene, private rng: Rng, private theme: Theme) {
     // Long safe start so the player learns to draw before the first gap.
@@ -183,26 +185,26 @@ export class LevelGenerator {
     const key = `star-${this.theme.id}`;
     if (this.scene.textures.exists(key)) return key;
     const g = this.scene.make.graphics({}, false);
-    const c = 32, pts: Phaser.Math.Vector2[] = [];
+    const T = TEX, c = 32 * T, pts: Phaser.Math.Vector2[] = [];
     for (let i = 0; i < 10; i++) {
-      const r = i % 2 ? 7 : 16, a = -Math.PI / 2 + (i * Math.PI) / 5;
+      const r = (i % 2 ? 7 : 16) * T, a = -Math.PI / 2 + (i * Math.PI) / 5;
       pts.push(new Phaser.Math.Vector2(c + Math.cos(a) * r, c + Math.sin(a) * r));
     }
     if (this.theme.id === 'neon') {
-      g.fillStyle(0xffe14d, 0.15).fillCircle(c, c, 26);
+      g.fillStyle(0xffe14d, 0.15).fillCircle(c, c, 26 * T);
       g.fillStyle(0xffe14d, 1).fillPoints(pts, true);
     } else {
-      g.fillStyle(0x111111, 1).fillPoints(pts.map((p) => new Phaser.Math.Vector2(p.x + 3, p.y + 4)), true);
+      g.fillStyle(0x111111, 1).fillPoints(pts.map((p) => new Phaser.Math.Vector2(p.x + 3 * T, p.y + 4 * T)), true);
       g.fillStyle(0xffffff, 1).fillPoints(pts, true);
-      g.lineStyle(3, 0x111111, 1).strokePoints(pts, true);
+      g.lineStyle(3 * T, 0x111111, 1).strokePoints(pts, true);
     }
-    g.generateTexture(key, 64, 64);
+    g.generateTexture(key, 64 * T, 64 * T);
     g.destroy();
     return key;
   }
 
   private addStar(x: number, y: number) {
-    const img = this.scene.add.image(x, y, this.starTexture()).setDepth(4);
+    const img = this.scene.add.image(x, y, this.starTexture()).setDepth(4).setScale(1 / TEX);
     this.scene.tweens.add({ targets: img, y: y - 6, duration: 700, yoyo: true, repeat: -1, ease: 'Sine.inOut' });
     this.stars.push({ x, y, taken: false, gfx: img });
   }
@@ -215,21 +217,21 @@ export class LevelGenerator {
   }
 
   private tile(c: Phaser.GameObjects.Container, x: number, y: number, w: number, h: number, key: string) {
-    c.add(this.scene.add.tileSprite(x, y, w, h, key).setOrigin(0));
+    c.add(this.scene.add.tileSprite(x, y, w, h, key).setOrigin(0).setTileScale(1 / TEX));
   }
 
   /** Bake the small repeating textures once. */
   private bakeTiles() {
     const t = this.scene.textures;
     if (t.exists('pop-stripe')) return;
-    const g = this.scene.make.graphics({}, false);
-    g.fillStyle(0xffffff, 1).fillRect(0, 0, 36, 16).fillStyle(0xe5342b, 1).fillRect(18, 2, 18, 12);
-    g.generateTexture('pop-stripe', 36, 16); g.clear();
-    g.fillStyle(0xff4fd8, 0.9).fillTriangle(10, 0, 21, 0, 15.5, 8);
-    g.generateTexture('neon-spikes', 22, 8); g.clear();
-    g.fillStyle(0xe5342b, 1).fillRect(0, 0, 28, 16).fillStyle(0x111111, 1)
-      .fillTriangle(0, 16, 14, 16, 28, 0).fillTriangle(14, 16, 28, 16, 28, 9).fillTriangle(0, 0, 0, 9, 7, 0);
-    g.generateTexture('pop-hazard', 28, 16);
+    const g = this.scene.make.graphics({}, false), T = TEX; // drawn TEX x larger, tiled at 1/TEX scale
+    g.fillStyle(0xffffff, 1).fillRect(0, 0, 36 * T, 16 * T).fillStyle(0xe5342b, 1).fillRect(18 * T, 2 * T, 18 * T, 12 * T);
+    g.generateTexture('pop-stripe', 36 * T, 16 * T); g.clear();
+    g.fillStyle(0xff4fd8, 0.9).fillTriangle(10 * T, 0, 21 * T, 0, 15.5 * T, 8 * T);
+    g.generateTexture('neon-spikes', 22 * T, 8 * T); g.clear();
+    g.fillStyle(0xe5342b, 1).fillRect(0, 0, 28 * T, 16 * T).fillStyle(0x111111, 1)
+      .fillTriangle(0, 16 * T, 14 * T, 16 * T, 28 * T, 0).fillTriangle(14 * T, 16 * T, 28 * T, 16 * T, 28 * T, 9 * T).fillTriangle(0, 0, 0, 9 * T, 7 * T, 0);
+    g.generateTexture('pop-hazard', 28 * T, 16 * T);
     g.destroy();
   }
 

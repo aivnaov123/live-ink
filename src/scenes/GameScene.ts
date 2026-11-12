@@ -7,6 +7,9 @@ import { dailyNumber, dailySeed, mulberry32, todayKey } from '../systems/DailySe
 import { load, save } from '../systems/Storage';
 import { currentTheme, toggleTheme, type Theme } from '../theme';
 import { PauseMenu } from '../ui/PauseMenu';
+import { StartMenu } from '../ui/StartMenu';
+import { designFit } from '../ui/fit';
+import { view, TEX } from '../res';
 import { inkLifeMs, SPEED_MILESTONES } from '../systems/Difficulty';
 import { sfx } from '../systems/Sfx';
 import { Juice } from '../systems/Juice';
@@ -26,7 +29,10 @@ export class GameScene extends Phaser.Scene {
   private score!: Phaser.GameObjects.Text;
   private sub!: Phaser.GameObjects.Text;
   // bars are plain rectangles (cheap quads) resized each frame, not Graphics redrawn each frame
-  private inkBar!: { bg: Phaser.GameObjects.Rectangle; glow?: Phaser.GameObjects.Rectangle; fill: Phaser.GameObjects.Rectangle; w: number };
+  private inkBar!: { outline?: Phaser.GameObjects.Rectangle; bg: Phaser.GameObjects.Rectangle; glow?: Phaser.GameObjects.Rectangle; fill: Phaser.GameObjects.Rectangle; w: number };
+  private pauseG!: Phaser.GameObjects.Graphics;
+  private pauseHit!: Phaser.GameObjects.Rectangle;
+  private sunburst?: Phaser.GameObjects.Image;
   private dead = false;
   private halftone?: Phaser.GameObjects.TileSprite;
   private parallax: { ts: Phaser.GameObjects.TileSprite; fx: number; fy: number }[] = [];
@@ -47,14 +53,30 @@ export class GameScene extends Phaser.Scene {
   private hint?: Phaser.GameObjects.Text;
   private milestone = 0;   // index of next SPEED_MILESTONES banner
   private juice!: Juice;
+  private over?: { cause: 'fall' | 'spikes'; m: number; ptsStr: string; isBest: boolean; unlocked: string[] };
+  private overObjs: Phaser.GameObjects.GameObject[] = [];
   private record = 0;        // best score ever at the start of this run
   private announced = 0;     // highest unlock threshold already announced this run
 
   constructor() { super('Game'); }
 
-  init(data: { mode?: Mode }) {
+  /** Logical view size (the camera is zoomed so the canvas can render at full screen resolution). */
+  private get vw() { return this.cameras.main.width / this.cameras.main.zoom; }
+  private get vh() { return this.cameras.main.height / this.cameras.main.zoom; }
+
+  /** Start menu shows on the first run of the session (and when changing mode/style from it). */
+  private static startedOnce = false;
+  private waiting = false;
+  private startMenu?: StartMenu;
+  private showStart = false;
+
+  init(data: { mode?: Mode; start?: boolean }) {
     this.mode = data.mode ?? 'daily';
     this.dead = false;
+    // (automated playtests run from a local file and skip the start menu unless they ask for it)
+    const w = window as unknown as { __LIVEINK_START?: boolean };
+    const testRun = location.protocol === 'file:' && !w.__LIVEINK_START;
+    this.showStart = data.start ?? (!GameScene.startedOnce && !testRun);
   }
 
   private get bestKey() {
@@ -63,9 +85,18 @@ export class GameScene extends Phaser.Scene {
   }
 
   create() {
+    // reset per-run state FIRST (scene.restart reuses this object)
+    this.gameTime = 0; this.paused = false; this.menu = undefined; this.milestone = 0; this.parallax = []; this.hudAt = -1e9;
+    this.over = undefined; this.overObjs = []; this.sunburst = undefined; this.halftone = undefined; this.startMenu = undefined;
     this.th = currentTheme();
     const th = this.th;
     const cam = this.cameras.main;
+    // crisp rendering: zoom around the top-left corner, so screen-fixed UI keeps its logical coordinates
+    cam.setOrigin(0, 0).setZoom(view.zoom);
+    // every Text renders its glyphs at the real screen resolution too
+    const sharpText = (go: Phaser.GameObjects.GameObject) => { if (go instanceof Phaser.GameObjects.Text) go.setResolution(Math.min(3, view.zoom)); };
+    this.events.on('addedtoscene', sharpText);
+    this.events.once('shutdown', () => this.events.off('addedtoscene', sharpText));
     cam.setBackgroundColor(th.bg);
     document.body.style.background = th.bg;
 
@@ -88,10 +119,9 @@ export class GameScene extends Phaser.Scene {
     this.sc = new ScoreSystem();
     this.lastX = this.ball.x;
     this.lastPlat = undefined; this.usedInk = false; this.airMs = 0; this.acc = 0;
-    this.gameTime = 0; this.paused = false; this.menu = undefined; this.milestone = 0; this.parallax = []; this.hudAt = -1e9;
 
-    cam.scrollX = this.ball.x - cam.width * 0.2;
-    cam.scrollY = this.ball.y - cam.height * 0.55;
+    cam.scrollX = this.ball.x - this.vw * 0.2;
+    cam.scrollY = this.ball.y - this.vh * 0.55;
 
     // HUD
     this.score = this.add.text(24, 20, '0', {
@@ -103,15 +133,14 @@ export class GameScene extends Phaser.Scene {
       fontFamily: th.font, fontSize: '18px', color: th.textDim,
     }).setScrollFactor(0).setDepth(20);
     {
-      const x = 24, y = cam.height - 50, w = cam.width - 48, h = 16;
-      const mk = (xx: number, yy: number, ww: number, hh: number, c: number, a = 1) =>
-        this.add.rectangle(xx, yy, ww, hh, c, a).setOrigin(0).setScrollFactor(0).setDepth(20);
-      if (th.id === 'pop') mk(x - 3, y - 3, w + 6, h + 6, 0x111111);           // chunky outline
+      // positions/sizes are set in layout() (follows the screen edges, any orientation)
+      const mk = (c: number, a = 1) => this.add.rectangle(0, 0, 10, 16, c, a).setOrigin(0).setScrollFactor(0).setDepth(20);
       this.inkBar = {
-        bg: mk(x, y, w, h, th.meterBg),
-        glow: th.id === 'neon' ? mk(x - 3, y - 3, w + 6, h + 6, th.meterFill, 0.2) : undefined,
-        fill: mk(x, y, w, h, th.meterFill),
-        w,
+        outline: th.id === 'pop' ? mk(0x111111) : undefined,                  // chunky outline
+        bg: mk(th.meterBg),
+        glow: th.id === 'neon' ? mk(th.meterFill, 0.2) : undefined,
+        fill: mk(th.meterFill),
+        w: 10,
       };
     }
     this.multText = this.add.text(0, 26, '', {
@@ -126,8 +155,8 @@ export class GameScene extends Phaser.Scene {
     };
 
     // Pause button (top-right). Stops the tap from also starting a line.
-    const pb = this.add.graphics().setScrollFactor(0).setDepth(25);
-    const px = cam.width - 70, py = 22;
+    const pb = this.pauseG = this.add.graphics().setScrollFactor(0).setDepth(25);
+    const px = 0, py = 0; // drawn at origin, positioned in layout()
     if (th.id === 'pop') {
       pb.fillStyle(0x111111, 1).fillRoundedRect(px + 4, py + 5, 48, 48, 10);
       pb.fillStyle(0xffffff, 1).fillRoundedRect(px, py, 48, 48, 10);
@@ -138,7 +167,7 @@ export class GameScene extends Phaser.Scene {
       pb.lineStyle(1, 0x4df3ff, 0.6).strokeRoundedRect(px, py, 48, 48, 24);
       pb.fillStyle(0xeaf6ff, 1).fillRect(px + 16, py + 14, 5, 20).fillRect(px + 27, py + 14, 5, 20);
     }
-    const pHit = this.add.rectangle(px + 24, py + 24, 64, 64, 0, 0).setScrollFactor(0).setDepth(26)
+    const pHit = this.pauseHit = this.add.rectangle(0, 0, 64, 64, 0, 0).setScrollFactor(0).setDepth(26)
       .setInteractive({ useHandCursor: true });
     pHit.on('pointerdown', (_p: unknown, _x: number, _y: number, e: Phaser.Types.Input.EventData) => {
       e.stopPropagation();
@@ -155,38 +184,78 @@ export class GameScene extends Phaser.Scene {
     this.game.events.on('hidden', onBlur);
     this.events.once('shutdown', () => { this.game.events.off('blur', onBlur); this.game.events.off('hidden', onBlur); });
 
-    const hint = this.hint = this.add.text(cam.width / 2, 300,
+    const hint = this.hint = this.add.text(this.vw / 2, 300,
       'Draw a path ahead of the ball\nCross gaps on your ink to build a COMBO', {
         fontFamily: th.font, fontSize: '24px', color: th.textDim, align: 'center',
       }).setOrigin(0.5).setScrollFactor(0).setDepth(20);
-    this.time.delayedCall(4000, () => this.tweens.add({ targets: hint, alpha: 0, duration: 600 }));
+    hint.setVisible(false);
+
+    this.waiting = this.showStart;
+    if (this.waiting) {
+      this.ink.enabled = false;
+      this.openStart();
+      const go = () => { if (this.waiting) this.begin(); };
+      this.input.keyboard?.on('keydown-SPACE', go);
+      this.input.keyboard?.on('keydown-ENTER', go);
+    } else this.begin();
+
+    this.layout();
+    // window resized / phone rotated -> the game size changes (see main.ts) -> re-layout
+    const onResize = () => {
+      this.cameras.main.setZoom(view.zoom);
+      this.layout();
+      if (this.paused) this.openMenu();
+      if (this.dead) this.buildGameOver();
+      if (this.waiting) this.openStart();
+    };
+    this.scale.on('resize', onResize);
+    this.events.once('shutdown', () => this.scale.off('resize', onResize));
+  }
+
+  /** Place everything that is anchored to the screen edges. */
+  private layout() {
+    const cw = this.vw, ch = this.vh;
+    for (const l of this.parallax) l.ts.setSize(cw, ch);
+    this.halftone?.setSize(cw, ch);
+    this.sunburst?.setDisplaySize(cw, ch);
+    this.pauseG.setPosition(cw - 70, 22);
+    this.pauseHit.setPosition(cw - 46, 46);
+    this.hint?.setPosition(cw / 2, Math.round(ch * 0.31));
+    // ink bar: full width on phones, capped + centered on wide screens
+    const w = Math.min(cw - 48, 560), ib = this.inkBar, x = Math.round((cw - w) / 2), y = ch - 50;
+    ib.w = w;
+    ib.outline?.setPosition(x - 3, y - 3).setSize(w + 6, 22);
+    ib.bg.setPosition(x, y).setSize(w, 16);
+    ib.glow?.setPosition(x - 3, y - 3);
+    ib.fill.setPosition(x, y).setSize(Math.max(16, w * this.ink.ratio), 16);
+    ib.glow?.setSize(Math.max(16, w * this.ink.ratio) + 6, 22);
   }
 
   /** Parallax decoration: stars/grid for Neon, halftone dots + sunburst for Pop Arcade. */
   private drawBackdrop() {
     const th = this.th;
     const rng = mulberry32(7);
-    const cw = this.cameras.main.width, ch = this.cameras.main.height;
+    const cw = this.vw, ch = this.vh;
     if (th.id === 'neon') {
       // Baked once into small tiles, then repeated by the GPU (rebuilding geometry every frame was slow on phones)
       if (!this.textures.exists('neon-bg')) {
         // ONE opaque tile (background color + grid + stars): a single full-screen layer with no blending
-        const g = this.make.graphics({}, false), T = 320;
-        g.fillStyle(Phaser.Display.Color.HexStringToColor(th.bg).color, 1).fillRect(0, 0, T, T);
-        g.lineStyle(1, th.bgDecor, 0.18);
-        for (let k = 0; k < T; k += 80) g.lineBetween(0, k + 0.5, T, k + 0.5).lineBetween(k + 0.5, 0, k + 0.5, T);
+        const g = this.make.graphics({}, false), T = 320, S = TEX; // drawn S x larger, tiled at 1/S
+        g.fillStyle(Phaser.Display.Color.HexStringToColor(th.bg).color, 1).fillRect(0, 0, T * S, T * S);
+        g.lineStyle(S, th.bgDecor, 0.18);
+        for (let k = 0; k < T; k += 80) g.lineBetween(0, (k + 0.5) * S, T * S, (k + 0.5) * S).lineBetween((k + 0.5) * S, 0, (k + 0.5) * S, T * S);
         for (let i = 0; i < 14; i++) {
-          g.fillStyle(rng() < 0.2 ? 0xff4fd8 : 0x4df3ff, 0.15 + rng() * 0.5).fillCircle(rng() * T, rng() * T, rng() * 1.8 + 0.4);
+          g.fillStyle(rng() < 0.2 ? 0xff4fd8 : 0x4df3ff, 0.15 + rng() * 0.5).fillCircle(rng() * T * S, rng() * T * S, (rng() * 1.8 + 0.4) * S);
         }
-        g.generateTexture('neon-bg', T, T); g.destroy();
+        g.generateTexture('neon-bg', T * S, T * S); g.destroy();
       }
       this.parallax = [
-        { ts: this.add.tileSprite(0, 0, cw, ch, 'neon-bg').setOrigin(0).setScrollFactor(0).setDepth(0), fx: 0.15, fy: 0.1 },
+        { ts: this.add.tileSprite(0, 0, cw, ch, 'neon-bg').setOrigin(0).setScrollFactor(0).setDepth(0).setTileScale(1 / TEX), fx: 0.15, fy: 0.1 },
       ];
     } else {
       // sunburst rays from a fixed point + halftone dot field
       // rays baked once into a screen-sized texture -> one cheap quad per frame
-      const W = this.cameras.main.width, H = this.cameras.main.height;
+      const W = this.vw, H = this.vh;
       if (!this.textures.exists('sunburst')) {
         const r = this.make.graphics({}, false);
         const cx = W * 0.85, cy = H * 0.3;
@@ -198,21 +267,22 @@ export class GameScene extends Phaser.Scene {
         r.generateTexture('sunburst', W, H);
         r.destroy();
       }
-      this.add.image(0, 0, 'sunburst').setOrigin(0).setScrollFactor(0).setDepth(0);
+      this.sunburst = this.add.image(0, 0, 'sunburst').setOrigin(0).setScrollFactor(0).setDepth(0);
       // halftone: draw one 56x56 tile once, then repeat it as a texture (cheap on phones)
       if (!this.textures.exists('halftone')) {
         const t = this.make.graphics({}, false);
-        t.fillStyle(th.bgDecor, 0.55).fillCircle(14, 14, 2.4).fillCircle(42, 42, 2.4);
-        t.generateTexture('halftone', 56, 56);
+        t.fillStyle(th.bgDecor, 0.55).fillCircle(14 * TEX, 14 * TEX, 2.4 * TEX).fillCircle(42 * TEX, 42 * TEX, 2.4 * TEX);
+        t.generateTexture('halftone', 56 * TEX, 56 * TEX);
         t.destroy();
       }
-      this.halftone = this.add.tileSprite(0, 0, this.cameras.main.width, this.cameras.main.height, 'halftone')
+      this.halftone = this.add.tileSprite(0, 0, this.vw, this.vh, 'halftone').setTileScale(1 / TEX)
         .setOrigin(0).setScrollFactor(0).setDepth(0);
     }
   }
 
   update(_time: number, rawDelta: number) {
     if (this.paused) return;
+    if (this.waiting) { this.ball.draw(1); return; } // frozen level behind the start menu
     if (this.dead) { this.juice.update(Math.min(rawDelta, 100), this.ball.rx, this.ball.ry, this.ball.color, 0); return; }
     const cam = this.cameras.main;
     const delta = Math.min(rawDelta, 100); // clamp: a hiccup shouldn't simulate seconds at once
@@ -240,15 +310,15 @@ export class GameScene extends Phaser.Scene {
       for (let i = 0; i < n; i++) this.juice.drawSpark(tip.x, tip.y, this.ink.currentColor());
     }
     this.juice.update(delta, this.ball.rx, this.ball.ry, this.ball.color, this.ball.body.velocity.x);
-    this.level.update(cam.scrollX, cam.scrollX + cam.width);
+    this.level.update(cam.scrollX, cam.scrollX + this.vw);
 
     // Frame-rate independent camera smoothing, following the interpolated ball
     const k = (base: number) => 1 - Math.pow(1 - base, delta / STEP_MS);
-    cam.scrollX = Phaser.Math.Linear(cam.scrollX, this.ball.rx - cam.width * 0.2, k(0.15));
-    cam.scrollY = Phaser.Math.Linear(cam.scrollY, this.ball.ry - cam.height * 0.55, k(0.06));
+    cam.scrollX = Phaser.Math.Linear(cam.scrollX, this.ball.rx - this.vw * 0.2, k(0.15));
+    cam.scrollY = Phaser.Math.Linear(cam.scrollY, this.ball.ry - this.vh * 0.55, k(0.06));
 
-    if (this.halftone) this.halftone.setTilePosition(cam.scrollX * 0.15, cam.scrollY * 0.1);
-    for (const l of this.parallax) l.ts.setTilePosition(cam.scrollX * l.fx, cam.scrollY * l.fy);
+    if (this.halftone) this.halftone.setTilePosition(cam.scrollX * 0.15 * TEX, cam.scrollY * 0.1 * TEX);
+    for (const l of this.parallax) l.ts.setTilePosition(cam.scrollX * l.fx * TEX, cam.scrollY * l.fy * TEX);
 
     // Long-run difficulty: shorter ink life late in the run (speed is handled in BallController)
     this.ink.lifeMs = inkLifeMs(this.meters);
@@ -342,7 +412,7 @@ export class GameScene extends Phaser.Scene {
         sfx.star();
         this.juice.burst(st.x, st.gfx.y, this.th.id === 'pop' ? 0xffffff : 0xffe14d, 16, 200);
         this.popup(`+${this.sc.addBonus(50)}`, 'star', st.x, st.y);
-        this.tweens.add({ targets: st.gfx, alpha: 0, scale: 1.6, duration: 250, onComplete: () => st.gfx.setVisible(false) });
+        this.tweens.add({ targets: st.gfx, alpha: 0, scale: 1.6 / TEX, duration: 250, onComplete: () => st.gfx.setVisible(false) });
       }
     }
 
@@ -370,7 +440,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private introBanner(text: string) {
-    const th = this.th, W = this.cameras.main.width;
+    const th = this.th, W = this.vw;
     const [title, sub] = text.split(' · ');
     const bg = this.add.graphics().setScrollFactor(0).setDepth(22);
     if (th.id === 'pop') {
@@ -395,7 +465,7 @@ export class GameScene extends Phaser.Scene {
 
   private unlockToast(name: string, i = 0) {
     if (i === 0) sfx.jingle();
-    const th = this.th, W = this.cameras.main.width;
+    const th = this.th, W = this.vw;
     const y = 150 + i * 58;
     const t = this.add.text(W / 2, y, `UNLOCKED: ${name}!`, {
       fontFamily: th.titleFont, fontSize: '26px', fontStyle: 'bold', color: th.id === 'pop' ? '#FFFFFF' : '#FFE14D',
@@ -406,8 +476,45 @@ export class GameScene extends Phaser.Scene {
     this.tweens.add({ targets: t, alpha: 0, y: y - 30, delay: 2200 + i * 300, duration: 500, onComplete: () => t.destroy() });
   }
 
+  private setInkBarVisible(v: boolean) {
+    const ib = this.inkBar;
+    [ib.outline, ib.bg, ib.glow, ib.fill].forEach((o) => o?.setVisible(v));
+  }
+
+  private openStart() {
+    this.setInkBarVisible(false); // the menu's footer sits where the bar is
+    this.startMenu?.destroy();
+    this.startMenu = new StartMenu(this, {
+      theme: this.th, mode: this.mode, dailyNo: dailyNumber(), best: this.best, record: this.record,
+      onPlay: () => this.begin(),
+      onMode: (mode) => { if (mode !== this.mode) this.scene.restart({ mode, start: true }); },
+      onTheme: () => { toggleTheme(); this.scene.restart({ mode: this.mode, start: true }); },
+      onSound: () => { sfx.unlock(); sfx.setMuted(!sfx.muted); this.openStart(); },
+      ball: this.ball.skin, line: this.ink.lineSkin,
+      onBall: (i) => { setBall(i); this.ball.skin = i; this.ball.draw(1); this.openStart(); },
+      onLine: (i) => { setLine(i); this.ink.lineSkin = i; this.openStart(); },
+    });
+  }
+
+  /** Leave the start menu (or skip it) and start the run. */
+  private begin() {
+    if (this.dead || this.paused) return;
+    const fromMenu = this.waiting;
+    this.waiting = false;
+    GameScene.startedOnce = true;
+    this.startMenu?.destroy();
+    this.startMenu = undefined;
+    this.setInkBarVisible(true);
+    if (fromMenu) { sfx.unlock(); sfx.click(); }
+    // enable drawing on the next frame so the "play" tap doesn't also start a line
+    this.time.delayedCall(0, () => { if (!this.dead && !this.paused) this.ink.enabled = true; });
+    const hint = this.hint!;
+    hint.setVisible(true).setAlpha(1);
+    this.time.delayedCall(4000, () => this.tweens.add({ targets: hint, alpha: 0, duration: 600 }));
+  }
+
   private pause() {
-    if (this.paused || this.dead) return;
+    if (this.paused || this.dead || this.waiting) return;
     this.paused = true;
     this.ink.cancel();
     this.ink.enabled = false;
@@ -466,14 +573,28 @@ export class GameScene extends Phaser.Scene {
     setRecord(pts);
     const ptsStr = pts.toLocaleString('en-US');
 
-    const W = this.cameras.main.width, H = this.cameras.main.height;
+    this.over = { cause, m, ptsStr, isBest, unlocked };
+    this.buildGameOver();
+  }
+
+  /** Game-over screen, laid out in 540x960 design space and scaled to any screen (rebuilt on resize). */
+  private buildGameOver() {
+    for (const o of this.overObjs) o.destroy();
+    this.overObjs = [];
+    if (!this.over) return;
+    const th = this.th, { cause, m, ptsStr, isBest, unlocked } = this.over;
+    const F = designFit(this);
+    const W = 540, H = 960;
     // (no container: input hit-tests on fixed-to-screen children inside containers are offset)
-    const fix = <T extends Phaser.GameObjects.GameObject & { setScrollFactor(x: number): T; setDepth(d: number): T }>(o: T) =>
-      o.setScrollFactor(0).setDepth(30);
+    const fix = <T extends Phaser.GameObjects.GameObject & { setScrollFactor(x: number): T; setDepth(d: number): T }>(o: T, raw = false) => {
+      if (!raw) F.place(o);
+      this.overObjs.push(o);
+      return o.setScrollFactor(0).setDepth(30);
+    };
     const t = (y: number, s: string, size: number, color = th.text, font = th.font) =>
       fix(this.add.text(W / 2, y, s, { fontFamily: font, fontSize: `${size}px`, color, align: 'center' }).setOrigin(0.5));
 
-    fix(this.add.rectangle(W / 2, H / 2, W, H, th.overlay, th.overlayAlpha));
+    fix(this.add.rectangle(F.W / 2, F.H / 2, F.W, F.H, th.overlay, th.overlayAlpha), true);
     const title = t(H * 0.27, cause === 'spikes' ? (th.id === 'pop' ? 'OUCH! SPIKES!' : 'Spiked.') : th.deathTitle, th.id === 'neon' ? 54 : 44, th.id === 'pop' ? '#E5342B' : th.text, th.titleFont);
     if (th.id === 'pop') title.setStroke('#111111', 8).setShadow(5, 6, '#111111', 0, true, true).setAngle(-3);
 

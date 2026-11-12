@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import type { Theme } from '../theme';
 import { BALLS, getBall } from '../skins';
 import { targetSpeed } from './Difficulty';
+import { TEX } from '../res';
 
 export const BALL_R = 16;
 const R = BALL_R;
@@ -39,15 +40,15 @@ export class BallController {
     scene.matter.body.setVelocity(this.body, { x: BASE_SPEED, y: 0 });
     if (!scene.textures.exists('juice-disc')) {
       const g = scene.make.graphics({}, false);
-      g.fillStyle(0xffffff, 1).fillCircle(16, 16, 16);
-      g.generateTexture('juice-disc', 32, 32); g.destroy();
+      g.fillStyle(0xffffff, 1).fillCircle(16 * TEX, 16 * TEX, 16 * TEX);
+      g.generateTexture('juice-disc', 32 * TEX, 32 * TEX); g.destroy();
     }
     if (theme.ballGlow) {
-      this.glow1 = scene.add.image(x, y, 'juice-disc').setDepth(6).setScale((R + 12) / 16).setAlpha(0.12).setTint(this.color);
-      this.glow2 = scene.add.image(x, y, 'juice-disc').setDepth(6).setScale((R + 5) / 16).setAlpha(0.25).setTint(this.color);
+      this.glow1 = scene.add.image(x, y, 'juice-disc').setDepth(6).setScale((R + 12) / 16 / TEX).setAlpha(0.12).setTint(this.color);
+      this.glow2 = scene.add.image(x, y, 'juice-disc').setDepth(6).setScale((R + 5) / 16 / TEX).setAlpha(0.25).setTint(this.color);
     }
-    if (theme.id === 'pop') this.shadow = scene.add.image(x + 3, y + 4, 'juice-disc').setDepth(6).setScale((R + 2) / 16).setTint(0x111111);
-    this.img = scene.add.image(x, y, this.bake()).setDepth(6);
+    if (theme.id === 'pop') this.shadow = scene.add.image(x + 3, y + 4, 'juice-disc').setDepth(6).setScale((R + 2) / 16 / TEX).setTint(0x111111);
+    this.img = scene.add.image(x, y, this.bake()).setDepth(6).setScale(1 / TEX);
     this.px = this.rx = x; this.py = this.ry = y;
   }
 
@@ -88,13 +89,14 @@ export class BallController {
     const key = `ball-${this.theme.id}-${this._skin}`;
     if (this.scene.textures.exists(key)) return key;
     const th = this.theme, sk = BALLS[this._skin];
-    const color = sk.color ?? th.ball, mark = sk.mark ?? th.ballMark, c = 24;
+    // drawn TEX times larger (crisp on high-res screens), the image is shown at 1/TEX scale
+    const color = sk.color ?? th.ball, mark = sk.mark ?? th.ballMark, T = TEX, c = 24 * T;
     const g = this.scene.make.graphics({}, false);
-    if (th.id === 'pop') { g.fillStyle(0x111111, 1).fillCircle(c, c, R + 2); g.fillStyle(color, 1).fillCircle(c, c, R - 2); }
-    else g.fillStyle(color, 1).fillCircle(c, c, R);
-    if (sk.ring !== undefined) g.lineStyle(2, sk.ring, 0.9).strokeCircle(c, c, R - 5);
-    g.lineStyle(3, mark, 0.85).lineBetween(c, c, c + R - (th.id === 'pop' ? 2 : 0), c);
-    g.generateTexture(key, 48, 48);
+    if (th.id === 'pop') { g.fillStyle(0x111111, 1).fillCircle(c, c, (R + 2) * T); g.fillStyle(color, 1).fillCircle(c, c, (R - 2) * T); }
+    else g.fillStyle(color, 1).fillCircle(c, c, R * T);
+    if (sk.ring !== undefined) g.lineStyle(2 * T, sk.ring, 0.9).strokeCircle(c, c, (R - 5) * T);
+    g.lineStyle(3 * T, mark, 0.85).lineBetween(c, c, c + (R - (th.id === 'pop' ? 2 : 0)) * T, c);
+    g.generateTexture(key, 48 * T, 48 * T);
     g.destroy();
     return key;
   }

@@ -1,5 +1,6 @@
 import Phaser from 'phaser';
 import type { Theme } from '../theme';
+import { TEX } from '../res';
 
 interface P { img: Phaser.GameObjects.Image; vx: number; vy: number; life: number; max: number; size: number; grav: number }
 interface Ring { x: number; y: number; life: number; color: number }
@@ -35,13 +36,11 @@ export class Juice {
   private bake(): string {
     const t = this.scene.textures;
     if (!t.exists('juice-glow')) {
-      const g = this.scene.make.graphics({}, false);
-      for (let r = 12; r > 0; r--) g.fillStyle(0xffffff, r <= 4 ? 1 : 0.05).fillCircle(12, 12, r);
-      g.generateTexture('juice-glow', 24, 24); g.clear();
-      g.fillStyle(0x111111, 1).fillRect(3, 4, 10, 10).fillStyle(0xffffff, 1).fillRect(0, 0, 10, 10);
-      g.generateTexture('juice-square', 14, 14); g.clear();
-      g.fillStyle(0xffffff, 1).fillCircle(16, 16, 16);
-      g.generateTexture('juice-disc', 32, 32);
+      const g = this.scene.make.graphics({}, false), T = TEX; // drawn TEX x larger, shown at 1/TEX
+      for (let r = 12; r > 0; r--) g.fillStyle(0xffffff, r <= 4 ? 1 : 0.05).fillCircle(12 * T, 12 * T, r * T);
+      g.generateTexture('juice-glow', 24 * T, 24 * T); g.clear();
+      g.fillStyle(0x111111, 1).fillRect(3 * T, 4 * T, 10 * T, 10 * T).fillStyle(0xffffff, 1).fillRect(0, 0, 10 * T, 10 * T);
+      g.generateTexture('juice-square', 14 * T, 14 * T);
       g.destroy();
     }
     return this.pop ? 'juice-square' : 'juice-glow';
@@ -82,7 +81,7 @@ export class Juice {
       p.img.x += p.vx * s; p.img.y += p.vy * s;
       const k = 1 - p.life / p.max;
       // glow texture is 24px with a ~8px core; square is 10px
-      p.img.setScale(this.pop ? (p.size * 2) / 10 : (p.size * 2.4) / 8).setAlpha(k);
+      p.img.setScale((this.pop ? (p.size * 2) / 10 : (p.size * 2.4) / 8) / TEX).setAlpha(k);
     }
 
     // trail: recent interpolated positions, longer when fast
@@ -95,7 +94,7 @@ export class Juice {
       const vis = i >= 1 && !!t;
       img.setVisible(vis); sh?.setVisible(vis);
       if (!vis) continue;
-      const k = 1 - i / this.trail.length, sc = (14 * k) / 16;
+      const k = 1 - i / this.trail.length, sc = (14 * k) / 16 / TEX;
       img.setPosition(t.x, t.y).setScale(sc).setTint(ballColor).setAlpha((this.pop ? 0.45 : 0.3) * k);
       sh?.setPosition(t.x + 3, t.y + 4).setScale(sc).setAlpha(0.25 * k);
     }
