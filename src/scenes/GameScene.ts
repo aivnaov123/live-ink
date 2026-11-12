@@ -7,6 +7,7 @@ import { dailyNumber, dailySeed, mulberry32, todayKey } from '../systems/DailySe
 import { load, save } from '../systems/Storage';
 import { currentTheme, toggleTheme, type Theme } from '../theme';
 import { PauseMenu } from '../ui/PauseMenu';
+import { inkLifeMs, SPEED_MILESTONES } from '../systems/Difficulty';
 import { setBall, setLine, getRecord, setRecord, newlyUnlocked } from '../skins';
 
 type Mode = 'daily' | 'endless';
@@ -39,6 +40,7 @@ export class GameScene extends Phaser.Scene {
   private paused = false;
   private menu?: PauseMenu;
   private hint?: Phaser.GameObjects.Text;
+  private milestone = 0;   // index of next SPEED_MILESTONES banner
   private record = 0;        // best score ever at the start of this run
   private announced = 0;     // highest unlock threshold already announced this run
 
@@ -73,7 +75,7 @@ export class GameScene extends Phaser.Scene {
     this.sc = new ScoreSystem();
     this.lastX = this.ball.x;
     this.lastPlat = undefined; this.usedInk = false; this.airMs = 0; this.acc = 0;
-    this.gameTime = 0; this.paused = false; this.menu = undefined;
+    this.gameTime = 0; this.paused = false; this.menu = undefined; this.milestone = 0;
 
     cam.scrollX = this.ball.x - cam.width * 0.2;
     cam.scrollY = this.ball.y - cam.height * 0.55;
@@ -202,6 +204,11 @@ export class GameScene extends Phaser.Scene {
     cam.scrollY = Phaser.Math.Linear(cam.scrollY, this.ball.ry - cam.height * 0.55, k(0.06));
 
     if (this.halftone) this.halftone.setTilePosition(cam.scrollX * 0.15, cam.scrollY * 0.1);
+
+    // Long-run difficulty: shorter ink life late in the run (speed is handled in BallController)
+    this.ink.lifeMs = inkLifeMs(this.meters);
+    const ms = SPEED_MILESTONES[this.milestone];
+    if (ms && this.meters >= ms.m) { this.milestone++; this.introBanner(ms.text); }
 
     // First time a new obstacle shows up: short banner (only the first 3 times ever per obstacle)
     for (const it of this.level.intros) {

@@ -1,11 +1,11 @@
 import Phaser from 'phaser';
 import type { Theme } from '../theme';
 import { BALLS, getBall } from '../skins';
+import { targetSpeed } from './Difficulty';
 
 export const BALL_R = 16;
 const R = BALL_R;
 const BASE_SPEED = 5;     // px per physics step (~300 px/s)
-const MAX_TARGET = 9;     // target speed late in the run
 const ACCEL = 0.25;       // motor: strong enough to climb ~35° ramps at target speed
 const SPEED_CAP = 16;     // hard cap against tunneling
 const STEP = 1000 / 60;   // physics step (ms), must match GameScene
@@ -52,7 +52,7 @@ export class BallController {
       this.body.force.y -= normal.ny * f;
     }
     const travelled = this.x - this.startX;
-    const target = Math.min(MAX_TARGET, BASE_SPEED + travelled / 5000);
+    const target = targetSpeed(travelled / 40); // 40 px = 1 m
     const { x: vx, y: vy } = this.body.velocity;
     // Push with a FORCE instead of overwriting velocity every step: overwriting breaks
     // Matter's resting contact and made the ball micro-bounce. Matter integrates

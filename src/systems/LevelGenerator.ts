@@ -84,7 +84,7 @@ export class LevelGenerator {
 
   /** Spiked ceiling touching a ball at (x,y) with radius r? */
   hitsCeiling(x: number, y: number, r: number): boolean {
-    return this.ceilings.some((c) => x + r * 0.6 > c.x && x - r * 0.6 < c.x + c.w && y - r < c.bottom + 4);
+    return this.ceilings.some((c) => x + r * 0.6 > c.x && x - r * 0.6 < c.x + c.w && y - r < c.bottom + 1); // touching the spikes (ceiling is solid, so the ball can never overlap them)
   }
 
   /** The platform whose top spans x (if any). */
@@ -152,8 +152,8 @@ export class LevelGenerator {
         const gap = 170 + r() * 70;
         const top = this.lastY;
         this.gapTo(gap, (r() - 0.5) * 30, 240 + r() * 120, false); // no star: it would sit in the ceiling
-        // ceiling over the gap: bottom 78 px above the higher edge -> a flat bridge fits, a big arc doesn't
-        const bottom = Math.min(top, this.lastY) - 78;
+        // ceiling over the gap: bottom 100 px above the higher edge -> a flat bridge fits, a big arc doesn't
+        const bottom = Math.min(top, this.lastY) - 100;
         this.addCeiling(startX - 60, gap + 140, bottom);
         break;
       }

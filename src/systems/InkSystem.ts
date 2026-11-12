@@ -8,14 +8,16 @@ const INK_REGEN = 260;              // px of ink regained per second while not d
 const INK_COST = 1;                 // ink per px drawn
 const MIN_STEP = 22;                // min distance between physics points (fewer joints = smoother roll)
 const THICK = 12;                   // physics thickness of a line (thicker = less tunneling)
-const SOLID_MS = 2000;              // line fully solid for this long...
-const LIFE_MS = 3000;               // ...then fades and disappears at this age
+// Line lifetime: set per segment at creation (see Difficulty.inkLifeMs, 3.0 s -> 2.5 s late in a run).
+// It's fully solid for the first 2/3 of its life, then fades out during the last 1/3 (the warning).
+const SOLID_FRACTION = 2 / 3;
 const INPUT_SMOOTH = 0.45;          // 0..1, lower = smoother but laggier finger tracking
 
 interface Seg {
   body: MatterJS.BodyType;
   ax: number; ay: number; bx: number; by: number;
   born: number;
+  life: number;      // ms this segment lives
   stroke: number;
 }
 
@@ -57,6 +59,8 @@ export class InkSystem {
   private passCache = new Map<number, Pass[]>();
   private bg: number;
   lineSkin = getLine();
+  /** Lifetime for newly drawn lines (ms); the scene lowers it slowly with distance. */
+  lifeMs = 3000;
 
   constructor(private scene: Phaser.Scene, private theme: Theme) {
     this.gfx = scene.add.graphics().setDepth(5);
@@ -162,7 +166,7 @@ export class InkSystem {
 
     // expire old segments
     this.segs = this.segs.filter((s) => {
-      if (time - s.born < LIFE_MS) return true;
+      if (time - s.born < s.life) return true;
       this.scene.matter.world.remove(s.body);
       return false;
     });
@@ -176,7 +180,8 @@ export class InkSystem {
     let curStroke = -1;
     for (const s of this.segs) {
       const age = time - s.born;
-      const raw = age < SOLID_MS ? 1 : 1 - (age - SOLID_MS) / (LIFE_MS - SOLID_MS);
+      const solid = s.life * SOLID_FRACTION;
+      const raw = age < solid ? 1 : 1 - (age - solid) / (s.life - solid);
       const a = raw >= 1 ? 1 : Math.ceil(raw * 10) / 10; // quantize so runs stay long
       const contiguous = cur && s.stroke === curStroke &&
         Math.abs(cur.pts[cur.pts.length - 1].x - s.ax) < 0.5 && Math.abs(cur.pts[cur.pts.length - 1].y - s.ay) < 0.5;
@@ -231,6 +236,6 @@ export class InkSystem {
         label: 'ink',
       },
     );
-    this.segs.push({ body, ax, ay, bx, by, born: time, stroke: this.strokeId });
+    this.segs.push({ body, ax, ay, bx, by, born: time, life: this.lifeMs, stroke: this.strokeId });
   }
 }
