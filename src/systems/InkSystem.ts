@@ -61,6 +61,8 @@ export class InkSystem {
   lineSkin = getLine();
   /** Lifetime for newly drawn lines (ms); the scene lowers it slowly with distance. */
   lifeMs = 3000;
+  /** px of line laid down this frame (drives the drawing sound + sparks). */
+  drawnPx = 0;
 
   constructor(private scene: Phaser.Scene, private theme: Theme) {
     this.gfx = scene.add.graphics().setDepth(5);
@@ -84,6 +86,12 @@ export class InkSystem {
 
   /** Stop the current stroke (pause, menu, death). */
   cancel() { this.drawing = false; this.last = null; this.cursor = null; }
+
+  get isDrawing() { return this.drawing && this.enabled; }
+  /** Pen tip in world coords while drawing. */
+  get tip() { return this.cursor; }
+  /** Color of the stroke being drawn now. */
+  currentColor() { return this.strokeColor(this.strokeId); }
 
   private strokeColor(stroke: number): number {
     const c = LINES[this.lineSkin].color;
@@ -143,6 +151,7 @@ export class InkSystem {
   }
 
   update(time: number, dtMs: number) {
+    this.drawnPx = 0;
     if (this.drawing && this.enabled && this.last && this.cursor) {
       // low-pass filter the finger so jittery input doesn't make a zig-zag line
       const raw = this.world(this.scene.input.activePointer);
@@ -157,6 +166,7 @@ export class InkSystem {
         const ny: number = this.last.y + (dy / d) * step;
         this.addSeg(this.last.x, this.last.y, nx, ny, time);
         this.ink -= step * INK_COST;
+        this.drawnPx += step;
         this.last = { x: nx, y: ny };
         dx = p.x - nx; dy = p.y - ny; d = Math.hypot(dx, dy);
       }

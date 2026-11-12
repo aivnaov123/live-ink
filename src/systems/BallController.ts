@@ -35,6 +35,7 @@ export class BallController {
     this.px = this.rx = x; this.py = this.ry = y;
   }
 
+  get color() { return BALLS[this.skin].color ?? this.theme.ball; }
   get x() { return this.body.position.x; }
   get y() { return this.body.position.y; }
 

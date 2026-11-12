@@ -32,3 +32,4 @@ const game = new Phaser.Game({
   scene: [GameScene],
 });
 (window as any).__game = game; // debug hook for automated playtests
+import("./systems/Sfx").then((m) => ((window as any).__sfx = m.sfx));

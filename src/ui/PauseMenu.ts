@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import type { Theme } from '../theme';
 import { BALLS, LINES, getRecord, isUnlocked } from '../skins';
+import { sfx } from '../systems/Sfx';
 
 export interface PauseMenuOpts {
   theme: Theme;
@@ -12,6 +13,7 @@ export interface PauseMenuOpts {
   onTheme(id: Theme['id']): void;
   onBall(i: number): void;
   onLine(i: number): void;
+  onSound(): void;
 }
 
 /** Pause overlay: resume, style, ball & line skins, restart, mode. All objects fixed to screen. */
@@ -41,7 +43,7 @@ export class PauseMenu {
   private hit(x: number, y: number, w: number, h: number, fn: () => void) {
     const r = this.fix(this.scene.add.rectangle(x, y, w, h, 0, 0).setInteractive({ useHandCursor: true }));
     r.on('pointerdown', (_p: unknown, _x: number, _y: number, e: Phaser.Types.Input.EventData) => e.stopPropagation());
-    r.on('pointerup', fn);
+    r.on('pointerup', () => { sfx.click(); fn(); });
   }
 
   private button(y: number, label: string, primary: boolean, fn: () => void, w = 300) {
@@ -162,6 +164,19 @@ export class PauseMenu {
     this.button(735, 'Restart', false, () => this.o.onRestart(this.o.mode));
     this.button(815, this.o.mode === 'daily' ? 'Switch to Endless' : 'Switch to Daily', false,
       () => this.o.onRestart(this.o.mode === 'daily' ? 'endless' : 'daily'));
-    this.text(W / 2, 885, 'Esc / P to pause on desktop', 14, th.textDim);
+    // sound toggle (top-right of the menu)
+    const sx = W - 70, sy = 110;
+    const sg = this.fix(sc.add.graphics());
+    if (th.id === 'pop') {
+      sg.fillStyle(0x111111, 1).fillRoundedRect(sx - 40 + 4, sy - 24 + 5, 80, 48, 10);
+      sg.fillStyle(0xffffff, 1).fillRoundedRect(sx - 40, sy - 24, 80, 48, 10);
+      sg.lineStyle(4, 0x111111, 1).strokeRoundedRect(sx - 40, sy - 24, 80, 48, 10);
+    } else {
+      sg.fillStyle(0x141b33, 1).fillRoundedRect(sx - 40, sy - 24, 80, 48, 24);
+      sg.lineStyle(1, 0x4df3ff, 0.6).strokeRoundedRect(sx - 40, sy - 24, 80, 48, 24);
+    }
+    this.text(sx, sy, sfx.muted ? '🔇 Off' : '🔊 On', 18, th.text);
+    this.hit(sx, sy, 84, 52, () => this.o.onSound());
+    this.text(W / 2, 885, 'Esc / P pause  ·  M sound', 14, th.textDim);
   }
 }

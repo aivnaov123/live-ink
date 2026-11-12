@@ -8,6 +8,8 @@ import { load, save } from '../systems/Storage';
 import { currentTheme, toggleTheme, type Theme } from '../theme';
 import { PauseMenu } from '../ui/PauseMenu';
 import { inkLifeMs, SPEED_MILESTONES } from '../systems/Difficulty';
+import { sfx } from '../systems/Sfx';
+import { Juice } from '../systems/Juice';
 import { setBall, setLine, getRecord, setRecord, newlyUnlocked } from '../skins';
 
 type Mode = 'daily' | 'endless';
@@ -41,6 +43,7 @@ export class GameScene extends Phaser.Scene {
   private menu?: PauseMenu;
   private hint?: Phaser.GameObjects.Text;
   private milestone = 0;   // index of next SPEED_MILESTONES banner
+  private juice!: Juice;
   private record = 0;        // best score ever at the start of this run
   private announced = 0;     // highest unlock threshold already announced this run
 
@@ -69,6 +72,13 @@ export class GameScene extends Phaser.Scene {
     this.level = new LevelGenerator(this, mulberry32(seed), th);
     this.ball = new BallController(this, 0, this.level.startY - 40, th);
     this.ink = new InkSystem(this, th);
+    this.juice = new Juice(this, th);
+    sfx.setTheme(th.id);
+    sfx.resume();
+    // browsers only allow audio after a user gesture
+    this.input.on('pointerdown', () => sfx.unlock());
+    this.input.keyboard?.on('keydown', () => sfx.unlock());
+    this.input.keyboard?.on('keydown-M', () => { sfx.setMuted(!sfx.muted); if (this.paused) this.openMenu(); });
     this.best = load(this.bestKey, 0);
     this.record = getRecord();
     this.announced = this.record;
@@ -178,7 +188,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   update(_time: number, rawDelta: number) {
-    if (this.dead || this.paused) return;
+    if (this.paused) return;
+    if (this.dead) { this.juice.update(Math.min(rawDelta, 100), this.ball.rx, this.ball.ry, this.ball.color, 0); return; }
     const cam = this.cameras.main;
     const delta = Math.min(rawDelta, 100); // clamp: a hiccup shouldn't simulate seconds at once
     this.gameTime += delta;
@@ -196,6 +207,15 @@ export class GameScene extends Phaser.Scene {
     // Interpolate between the last two physics steps -> smooth on 60/120/144 Hz screens
     this.ball.draw(this.acc / STEP_MS);
     this.ink.update(time, delta);
+    // drawing sound + sparks at the pen tip
+    const drawSpeed = this.ink.drawnPx / Math.max(1, delta / STEP_MS) / 12; // ~12 px per frame = full
+    sfx.drawLevel(this.ink.isDrawing ? drawSpeed : 0);
+    const tip = this.ink.tip;
+    if (tip && this.ink.drawnPx > 0) {
+      const n = Math.min(3, 1 + Math.floor(drawSpeed * 2));
+      for (let i = 0; i < n; i++) this.juice.drawSpark(tip.x, tip.y, this.ink.currentColor());
+    }
+    this.juice.update(delta, this.ball.rx, this.ball.ry, this.ball.color, this.ball.body.velocity.x);
     this.level.update(cam.scrollX, cam.scrollX + cam.width);
 
     // Frame-rate independent camera smoothing, following the interpolated ball
@@ -208,7 +228,7 @@ export class GameScene extends Phaser.Scene {
     // Long-run difficulty: shorter ink life late in the run (speed is handled in BallController)
     this.ink.lifeMs = inkLifeMs(this.meters);
     const ms = SPEED_MILESTONES[this.milestone];
-    if (ms && this.meters >= ms.m) { this.milestone++; this.introBanner(ms.text); }
+    if (ms && this.meters >= ms.m) { this.milestone++; this.introBanner(ms.text); sfx.jingle(); }
 
     // First time a new obstacle shows up: short banner (only the first 3 times ever per obstacle)
     for (const it of this.level.intros) {
@@ -264,6 +284,11 @@ export class GameScene extends Phaser.Scene {
       if (this.lastPlat && this.usedInk) {
         this.sc.bridge(time);
         this.popup(this.sc.mult > 1 ? `BRIDGE  x${this.sc.mult}` : 'BRIDGE', 'big');
+        sfx.bridge(this.sc.mult);
+        const bc = this.ink.currentColor();
+        this.juice.burst(bx, by + BALL_R, bc, 8 + this.sc.mult * 2, 140 + this.sc.mult * 15);
+        this.juice.ring(bx, by, bc);
+        if (this.sc.mult >= 5) this.cameras.main.shake(90, 0.003);
         this.tweens.add({ targets: this.multText, scale: { from: 1.5, to: 1 }, duration: 250, ease: 'Back.out' });
       }
       this.lastPlat = plat;
@@ -273,7 +298,12 @@ export class GameScene extends Phaser.Scene {
     // Air time: launched off your own ramp
     if (!onGround && !onInk) this.airMs += delta;
     else {
-      if (this.airMs > 450 && this.usedInk) this.popup(`AIR +${this.sc.addBonus(Math.round(this.airMs / 20))}`, 'small');
+      if (this.airMs > 450 && this.usedInk) { this.popup(`AIR +${this.sc.addBonus(Math.round(this.airMs / 20))}`, 'small'); sfx.air(); }
+      if (this.airMs > 250) {
+        const k = Math.min(1, this.airMs / 900);
+        sfx.land(k);
+        this.juice.burst(bx, by + BALL_R, this.th.id === 'pop' ? 0xffffff : 0x9fb4ff, Math.round(4 + 8 * k), 90 + 80 * k, 2);
+      }
       this.airMs = 0;
     }
 
@@ -282,12 +312,14 @@ export class GameScene extends Phaser.Scene {
       if (!st.taken && Math.hypot(st.x - bx, st.y + st.gfx.y - by) < BALL_R + 13) {
         st.taken = true;
         this.sc.stars++;
+        sfx.star();
+        this.juice.burst(st.x, st.y + st.gfx.y, this.th.id === 'pop' ? 0xffffff : 0xffe14d, 16, 200);
         this.popup(`+${this.sc.addBonus(50)}`, 'star', st.x, st.y);
         this.tweens.add({ targets: st.gfx, alpha: 0, scale: 1.6, duration: 250, onComplete: () => st.gfx.setVisible(false) });
       }
     }
 
-    if (this.sc.update(time)) this.popup(`x${this.sc.mult}`, 'drop');
+    if (this.sc.update(time)) { this.popup(`x${this.sc.mult}`, 'drop'); sfx.comboDrop(); }
   }
 
   private popup(text: string, kind: 'big' | 'small' | 'star' | 'drop', x = this.ball.x, y = this.ball.y - 50) {
@@ -335,6 +367,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   private unlockToast(name: string, i = 0) {
+    if (i === 0) sfx.jingle();
     const th = this.th, W = this.cameras.main.width;
     const y = 150 + i * 58;
     const t = this.add.text(W / 2, y, `UNLOCKED: ${name}!`, {
@@ -353,6 +386,7 @@ export class GameScene extends Phaser.Scene {
     this.ink.enabled = false;
     this.tweens.pauseAll();
     this.time.paused = true;
+    sfx.suspend();
     this.hint?.setVisible(false);
     this.openMenu();
   }
@@ -364,6 +398,7 @@ export class GameScene extends Phaser.Scene {
     this.paused = false;
     this.tweens.resumeAll();
     this.time.paused = false;
+    sfx.resume();
     this.hint?.setVisible(true);
     // re-enable drawing on the next frame so the "Resume" tap doesn't start a line
     this.time.delayedCall(0, () => { this.ink.enabled = true; });
@@ -378,6 +413,7 @@ export class GameScene extends Phaser.Scene {
       onTheme: () => { toggleTheme(); this.scene.restart({ mode: this.mode }); },
       onBall: (i) => { setBall(i); this.ball.skin = i; this.ball.draw(1); this.openMenu(); },
       onLine: (i) => { setLine(i); this.ink.lineSkin = i; this.openMenu(); },
+      onSound: () => { sfx.setMuted(!sfx.muted); this.openMenu(); },
     });
   }
 
@@ -387,6 +423,9 @@ export class GameScene extends Phaser.Scene {
 
   private die(cause: 'fall' | 'spikes' = 'fall') {
     this.dead = true;
+    sfx.drawLevel(0);
+    sfx.die(cause);
+    this.juice.burst(this.ball.x, this.ball.y, this.ball.color, 26, 260, 4);
     this.ink.cancel();
     this.ink.enabled = false;
     this.matter.world.pause();
@@ -435,7 +474,7 @@ export class GameScene extends Phaser.Scene {
       else g.lineStyle(2, th.btnBg, 1).strokeRoundedRect(bx, by, 300, 68, r);
       t(y, label, 26, primary ? th.btnText : th.text);
       const hit = fix(this.add.rectangle(W / 2, y, 300, 68, 0, 0).setInteractive({ useHandCursor: true }));
-      hit.on('pointerup', fn);
+      hit.on('pointerup', () => { sfx.click(); fn(); });
     };
     button(H * 0.62, th.id === 'pop' ? 'PLAY AGAIN' : 'Try again', true, () => this.scene.restart({ mode: this.mode }));
     button(H * 0.71, this.mode === 'daily' ? 'Play endless' : 'Play daily', false, () =>
