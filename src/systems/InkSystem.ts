@@ -21,8 +21,7 @@ interface Seg {
   stroke: number;
 }
 
-interface Pass { w: number; color: number; dx?: number; dy?: number }
-interface Run { pts: Phaser.Math.Vector2[]; a: number; stroke: number }
+interface Pass { w: number; color: number; dx?: number; dy?: number; cap?: boolean }
 
 const mix = (c1: number, c2: number, t: number) => {
   const r = (c1 >> 16 & 255) + ((c2 >> 16 & 255) - (c1 >> 16 & 255)) * t;
@@ -30,22 +29,6 @@ const mix = (c1: number, c2: number, t: number) => {
   const b = (c1 & 255) + ((c2 & 255) - (c1 & 255)) * t;
   return (Math.round(r) << 16) | (Math.round(g) << 8) | Math.round(b);
 };
-
-/** Chaikin corner-cutting: turns the polyline into a smooth curve (endpoints kept). */
-function smooth(pts: Phaser.Math.Vector2[], iterations = 2): Phaser.Math.Vector2[] {
-  let p = pts;
-  for (let k = 0; k < iterations && p.length > 2; k++) {
-    const out = [p[0]];
-    for (let i = 0; i < p.length - 1; i++) {
-      const a = p[i], b = p[i + 1];
-      out.push(new Phaser.Math.Vector2(a.x * 0.75 + b.x * 0.25, a.y * 0.75 + b.y * 0.25));
-      out.push(new Phaser.Math.Vector2(a.x * 0.25 + b.x * 0.75, a.y * 0.25 + b.y * 0.75));
-    }
-    out.push(p[p.length - 1]);
-    p = out;
-  }
-  return p;
-}
 
 export class InkSystem {
   ink = INK_MAX;
@@ -106,15 +89,14 @@ export class InkSystem {
     if (p) return p;
     p = this.theme.id === 'neon'
       ? [
-          { w: 26, color: mix(this.bg, color, 0.14) },
-          { w: 15, color: mix(this.bg, color, 0.38) },
-          { w: 7, color },
+          { w: 20, color: mix(this.bg, color, 0.24) },          // one soft glow layer
+          { w: 7, color, cap: true },
           { w: 2.5, color: mix(color, 0xffffff, 0.8) },
         ]
       : [
-          { w: 15, color: 0x111111, dx: 3, dy: 4 }, // hard offset shadow
-          { w: 15, color: 0x111111 },               // thick black outline
-          { w: 8, color },
+          { w: 15, color: 0x111111, dx: 3, dy: 4, cap: true }, // hard offset shadow
+          { w: 15, color: 0x111111, cap: true },               // thick black outline
+          { w: 8, color, cap: true },
           { w: 2, color: mix(color, 0xffffff, 0.55), dx: -1, dy: -2 }, // shine
         ];
     this.passCache.set(color, p);
@@ -184,51 +166,89 @@ export class InkSystem {
   }
 
   /** Group segments into continuous runs (same stroke + same fade level), then draw each as one smooth path. */
+  // ---- allocation-free rendering (garbage made phones stutter on GC) ----
+  // Runs are pooled objects with flat [x0,y0,x1,y1,...] arrays that are reused every frame.
+  private runPool: { pts: number[]; sm: number[]; a: number; stroke: number }[] = [];
+  private scratch: number[] = [];
+
+  private runAt(i: number, a: number, stroke: number) {
+    let r = this.runPool[i];
+    if (!r) { r = { pts: [], sm: [], a, stroke }; this.runPool[i] = r; }
+    r.pts.length = 0; r.a = a; r.stroke = stroke;
+    return r;
+  }
+
+  /** Chaikin smoothing (2 passes) of flat points `src` into `out`, reusing `this.scratch`. */
+  private smoothInto(src: number[], out: number[]) {
+    let from = src, to = this.scratch;
+    for (let it = 0; it < 2; it++) {
+      to.length = 0;
+      const n = from.length / 2;
+      if (n <= 2) { to.push(...from); }
+      else {
+        to.push(from[0], from[1]);
+        for (let i = 0; i < n - 1; i++) {
+          const ax = from[i * 2], ay = from[i * 2 + 1], bx = from[i * 2 + 2], by = from[i * 2 + 3];
+          to.push(ax * 0.75 + bx * 0.25, ay * 0.75 + by * 0.25, ax * 0.25 + bx * 0.75, ay * 0.25 + by * 0.75);
+        }
+        to.push(from[from.length - 2], from[from.length - 1]);
+      }
+      // ping-pong: second pass writes into `out`
+      from = to; to = it === 0 ? out : this.scratch;
+    }
+    if (from !== out) { out.length = 0; for (let i = 0; i < from.length; i++) out.push(from[i]); }
+  }
+
+  /** Group segments into continuous runs (same stroke + same fade level), then draw each as one smooth path. */
   private render(time: number) {
-    const runs: Run[] = [];
-    let cur: Run | null = null;
-    let curStroke = -1;
+    let nRuns = 0;
+    let cur: { pts: number[]; sm: number[]; a: number; stroke: number } | null = null;
     for (const s of this.segs) {
       const age = time - s.born;
       const solid = s.life * SOLID_FRACTION;
       const raw = age < solid ? 1 : 1 - (age - solid) / (s.life - solid);
       const a = raw >= 1 ? 1 : Math.ceil(raw * 10) / 10; // quantize so runs stay long
-      const contiguous = cur && s.stroke === curStroke &&
-        Math.abs(cur.pts[cur.pts.length - 1].x - s.ax) < 0.5 && Math.abs(cur.pts[cur.pts.length - 1].y - s.ay) < 0.5;
-      if (!cur || !contiguous || cur.a !== a) {
-        cur = { pts: [new Phaser.Math.Vector2(s.ax, s.ay)], a, stroke: s.stroke };
-        runs.push(cur);
-        curStroke = s.stroke;
-      }
-      cur.pts.push(new Phaser.Math.Vector2(s.bx, s.by));
+      const contiguous = cur && s.stroke === cur.stroke && cur.a === a &&
+        Math.abs(cur.pts[cur.pts.length - 2] - s.ax) < 0.5 && Math.abs(cur.pts[cur.pts.length - 1] - s.ay) < 0.5;
+      if (!contiguous) { cur = this.runAt(nRuns++, a, s.stroke); cur.pts.push(s.ax, s.ay); }
+      cur!.pts.push(s.bx, s.by);
     }
 
     // Live tail: the physics line grows in MIN_STEP chunks, so draw the remaining bit from the last
     // point to the finger every frame — the line follows the finger smoothly even when drawing slowly.
     if (this.drawing && this.last && this.cursor && this.ink >= MIN_STEP * INK_COST) { // no tail when out of ink
-      const tip = new Phaser.Math.Vector2(this.cursor.x, this.cursor.y);
-      const end = cur?.pts[cur.pts.length - 1];
-      if (cur && cur.a === 1 && curStroke === this.strokeId && end && Math.abs(end.x - this.last.x) < 0.5 && Math.abs(end.y - this.last.y) < 0.5) {
-        if (Math.hypot(tip.x - end.x, tip.y - end.y) > 1) cur.pts.push(tip);
-      } else if (Math.hypot(tip.x - this.last.x, tip.y - this.last.y) > 1) {
-        runs.push({ pts: [new Phaser.Math.Vector2(this.last.x, this.last.y), tip], a: 1, stroke: this.strokeId });
+      const tx = this.cursor.x, ty = this.cursor.y;
+      const attach = cur && cur.a === 1 && cur.stroke === this.strokeId &&
+        Math.abs(cur.pts[cur.pts.length - 2] - this.last.x) < 0.5 && Math.abs(cur.pts[cur.pts.length - 1] - this.last.y) < 0.5;
+      if (attach) { if (Math.hypot(tx - this.last.x, ty - this.last.y) > 1) cur!.pts.push(tx, ty); }
+      else if (Math.hypot(tx - this.last.x, ty - this.last.y) > 1) {
+        const r = this.runAt(nRuns++, 1, this.strokeId);
+        r.pts.push(this.last.x, this.last.y, tx, ty);
       }
     }
 
+    for (let i = 0; i < nRuns; i++) this.smoothInto(this.runPool[i].pts, this.runPool[i].sm);
+
     const g = this.gfx;
     g.clear();
-    const smoothed = runs.map((r) => ({ a: r.a, pts: smooth(r.pts), passes: this.passesFor(this.strokeColor(r.stroke)) }));
-    for (let pi = 0; pi < 4; pi++) {
-      for (const r of smoothed) {
-        const pass = r.passes[pi];
+    const nPass = this.theme.id === 'neon' ? 3 : 4;
+    for (let pi = 0; pi < nPass; pi++) {
+      for (let i = 0; i < nRuns; i++) {
+        const r = this.runPool[i], pts = r.sm, n = pts.length;
+        if (n < 4) continue;
+        const pass = this.passesFor(this.strokeColor(r.stroke))[pi];
         const ox = pass.dx ?? 0, oy = pass.dy ?? 0;
-        const pts = ox || oy ? r.pts.map((p) => new Phaser.Math.Vector2(p.x + ox, p.y + oy)) : r.pts;
         g.lineStyle(pass.w, pass.color, r.a);
-        g.strokePoints(pts, false, false);
-        // round caps; joins are already smooth after Chaikin, so no per-point circles needed
-        g.fillStyle(pass.color, r.a);
-        g.fillCircle(pts[0].x, pts[0].y, pass.w / 2);
-        g.fillCircle(pts[pts.length - 1].x, pts[pts.length - 1].y, pass.w / 2);
+        g.beginPath();
+        g.moveTo(pts[0] + ox, pts[1] + oy);
+        for (let k = 2; k < n; k += 2) g.lineTo(pts[k] + ox, pts[k + 1] + oy);
+        g.strokePath();
+        // round caps only where they're visible; joins are already smooth after Chaikin
+        if (pass.cap) {
+          g.fillStyle(pass.color, r.a);
+          g.fillCircle(pts[0] + ox, pts[1] + oy, pass.w / 2);
+          g.fillCircle(pts[n - 2] + ox, pts[n - 1] + oy, pass.w / 2);
+        }
       }
     }
   }

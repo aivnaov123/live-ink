@@ -25,13 +25,16 @@ export class GameScene extends Phaser.Scene {
   private level!: LevelGenerator;
   private score!: Phaser.GameObjects.Text;
   private sub!: Phaser.GameObjects.Text;
-  private inkBar!: Phaser.GameObjects.Graphics;
+  // bars are plain rectangles (cheap quads) resized each frame, not Graphics redrawn each frame
+  private inkBar!: { bg: Phaser.GameObjects.Rectangle; glow?: Phaser.GameObjects.Rectangle; fill: Phaser.GameObjects.Rectangle; w: number };
   private dead = false;
   private halftone?: Phaser.GameObjects.TileSprite;
+  private parallax: { ts: Phaser.GameObjects.TileSprite; fx: number; fy: number }[] = [];
+  private hudAt = 0; // last HUD text refresh (ms)
   private best = 0;
   private sc!: ScoreSystem;
   private multText!: Phaser.GameObjects.Text;
-  private comboBar!: Phaser.GameObjects.Graphics;
+  private comboBar!: { bg: Phaser.GameObjects.Rectangle; fill: Phaser.GameObjects.Rectangle };
   // combo tracking
   private lastX = 0;
   private lastPlat?: Platform;
@@ -85,7 +88,7 @@ export class GameScene extends Phaser.Scene {
     this.sc = new ScoreSystem();
     this.lastX = this.ball.x;
     this.lastPlat = undefined; this.usedInk = false; this.airMs = 0; this.acc = 0;
-    this.gameTime = 0; this.paused = false; this.menu = undefined; this.milestone = 0;
+    this.gameTime = 0; this.paused = false; this.menu = undefined; this.milestone = 0; this.parallax = []; this.hudAt = -1e9;
 
     cam.scrollX = this.ball.x - cam.width * 0.2;
     cam.scrollY = this.ball.y - cam.height * 0.55;
@@ -99,14 +102,28 @@ export class GameScene extends Phaser.Scene {
     this.sub = this.add.text(26, 74, '', {
       fontFamily: th.font, fontSize: '18px', color: th.textDim,
     }).setScrollFactor(0).setDepth(20);
-    this.inkBar = this.add.graphics().setScrollFactor(0).setDepth(20);
+    {
+      const x = 24, y = cam.height - 50, w = cam.width - 48, h = 16;
+      const mk = (xx: number, yy: number, ww: number, hh: number, c: number, a = 1) =>
+        this.add.rectangle(xx, yy, ww, hh, c, a).setOrigin(0).setScrollFactor(0).setDepth(20);
+      if (th.id === 'pop') mk(x - 3, y - 3, w + 6, h + 6, 0x111111);           // chunky outline
+      this.inkBar = {
+        bg: mk(x, y, w, h, th.meterBg),
+        glow: th.id === 'neon' ? mk(x - 3, y - 3, w + 6, h + 6, th.meterFill, 0.2) : undefined,
+        fill: mk(x, y, w, h, th.meterFill),
+        w,
+      };
+    }
     this.multText = this.add.text(0, 26, '', {
       fontFamily: th.titleFont, fontSize: '30px', fontStyle: 'bold',
       color: th.id === 'neon' ? '#FFE14D' : '#E5342B',
     }).setScrollFactor(0).setDepth(20).setOrigin(0, 0);
     if (th.id === 'pop') this.multText.setStroke('#111111', 6);
     else this.multText.setShadow(0, 0, '#FFE14D', 10, false, true);
-    this.comboBar = this.add.graphics().setScrollFactor(0).setDepth(20);
+    this.comboBar = {
+      bg: this.add.rectangle(0, 64, 40, 5, th.id === 'neon' ? 0x141b33 : 0xffffff).setOrigin(0).setScrollFactor(0).setDepth(20).setVisible(false),
+      fill: this.add.rectangle(0, 64, 40, 5, th.id === 'neon' ? 0xffe14d : 0xe5342b).setOrigin(0).setScrollFactor(0).setDepth(20).setVisible(false),
+    };
 
     // Pause button (top-right). Stops the tap from also starting a line.
     const pb = this.add.graphics().setScrollFactor(0).setDepth(25);
@@ -149,16 +166,23 @@ export class GameScene extends Phaser.Scene {
   private drawBackdrop() {
     const th = this.th;
     const rng = mulberry32(7);
-    const g = this.add.graphics().setScrollFactor(0.15, 0.1).setDepth(0);
-    const W = 4000, H = 2400;
+    const cw = this.cameras.main.width, ch = this.cameras.main.height;
     if (th.id === 'neon') {
-      g.lineStyle(1, th.bgDecor, 0.18);
-      for (let x = -400; x < W; x += 80) g.lineBetween(x, -600, x, H);
-      for (let y = -600; y < H; y += 80) g.lineBetween(-400, y, W, y);
-      for (let i = 0; i < 220; i++) {
-        g.fillStyle(rng() < 0.2 ? 0xff4fd8 : 0x4df3ff, 0.15 + rng() * 0.5)
-          .fillCircle(-400 + rng() * W, -600 + rng() * H, rng() * 1.8 + 0.4);
+      // Baked once into small tiles, then repeated by the GPU (rebuilding geometry every frame was slow on phones)
+      if (!this.textures.exists('neon-bg')) {
+        // ONE opaque tile (background color + grid + stars): a single full-screen layer with no blending
+        const g = this.make.graphics({}, false), T = 320;
+        g.fillStyle(Phaser.Display.Color.HexStringToColor(th.bg).color, 1).fillRect(0, 0, T, T);
+        g.lineStyle(1, th.bgDecor, 0.18);
+        for (let k = 0; k < T; k += 80) g.lineBetween(0, k + 0.5, T, k + 0.5).lineBetween(k + 0.5, 0, k + 0.5, T);
+        for (let i = 0; i < 14; i++) {
+          g.fillStyle(rng() < 0.2 ? 0xff4fd8 : 0x4df3ff, 0.15 + rng() * 0.5).fillCircle(rng() * T, rng() * T, rng() * 1.8 + 0.4);
+        }
+        g.generateTexture('neon-bg', T, T); g.destroy();
       }
+      this.parallax = [
+        { ts: this.add.tileSprite(0, 0, cw, ch, 'neon-bg').setOrigin(0).setScrollFactor(0).setDepth(0), fx: 0.15, fy: 0.1 },
+      ];
     } else {
       // sunburst rays from a fixed point + halftone dot field
       // rays baked once into a screen-sized texture -> one cheap quad per frame
@@ -224,6 +248,7 @@ export class GameScene extends Phaser.Scene {
     cam.scrollY = Phaser.Math.Linear(cam.scrollY, this.ball.ry - cam.height * 0.55, k(0.06));
 
     if (this.halftone) this.halftone.setTilePosition(cam.scrollX * 0.15, cam.scrollY * 0.1);
+    for (const l of this.parallax) l.ts.setTilePosition(cam.scrollX * l.fx, cam.scrollY * l.fy);
 
     // Long-run difficulty: shorter ink life late in the run (speed is handled in BallController)
     this.ink.lifeMs = inkLifeMs(this.meters);
@@ -244,24 +269,26 @@ export class GameScene extends Phaser.Scene {
       newlyUnlocked(this.announced, this.sc.total).forEach((name, i) => this.unlockToast(name, i));
       this.announced = this.sc.total;
     }
-    this.score.setText(this.sc.total.toLocaleString('en-US'));
-    this.sub.setText(`${this.meters} m  ·  ${this.mode === 'daily' ? `DAILY #${dailyNumber()}` : 'ENDLESS'}  ·  best ${this.best.toLocaleString('en-US')}`);
-    this.multText.setText(this.sc.mult > 1 ? `x${this.sc.mult}` : '').setX(this.score.x + this.score.width + 14);
-    this.comboBar.clear();
+    // Text re-renders are costly on phones: refresh the HUD ~12x per second, not every frame
+    if (this.gameTime - this.hudAt >= 80) {
+      this.hudAt = this.gameTime;
+      this.score.setText(this.sc.total.toLocaleString('en-US'));
+      this.sub.setText(`${this.meters} m  ·  ${this.mode === 'daily' ? `DAILY #${dailyNumber()}` : 'ENDLESS'}  ·  best ${this.best.toLocaleString('en-US')}`);
+      this.multText.setText(this.sc.mult > 1 ? `x${this.sc.mult}` : '').setX(this.score.x + this.score.width + 14);
+    }
     const left = this.sc.windowLeft(time);
+    this.comboBar.bg.setVisible(left > 0); this.comboBar.fill.setVisible(left > 0);
     if (left > 0) {
       const bx = this.multText.x, bw = Math.max(40, this.multText.width);
-      this.comboBar.fillStyle(this.th.id === 'neon' ? 0x141b33 : 0xffffff, 1).fillRect(bx, 64, bw, 5);
-      this.comboBar.fillStyle(this.th.id === 'neon' ? 0xffe14d : 0xe5342b, 1).fillRect(bx, 64, bw * left, 5);
+      this.comboBar.bg.setPosition(bx, 64).setSize(bw, 5);
+      this.comboBar.fill.setPosition(bx, 64).setSize(bw * left, 5);
     }
 
-    const th = this.th, x = 24, y = cam.height - 50, w = cam.width - 48, h = 16;
-    const r = th.id === 'neon' ? 8 : 2;
-    this.inkBar.clear();
-    this.inkBar.fillStyle(th.meterBg, 1).fillRoundedRect(x, y, w, h, r);
+    const th = this.th, ib = this.inkBar;
     const col = this.ink.ratio > 0.25 ? th.meterFill : th.meterLow;
-    if (th.id === 'neon') this.inkBar.fillStyle(col, 0.2).fillRoundedRect(x - 3, y - 3, Math.max(h, w * this.ink.ratio) + 6, h + 6, r + 3);
-    this.inkBar.fillStyle(col, 1).fillRoundedRect(x, y, Math.max(h, w * this.ink.ratio), h, r);
+    const fw = Math.max(16, ib.w * this.ink.ratio);
+    ib.fill.setSize(fw, 16).setFillStyle(col);
+    ib.glow?.setSize(fw + 6, 22).setFillStyle(col, 0.2);
 
     if (this.ball.y > this.level.floorNear(this.ball.x) + 350) this.die();
     else if (this.level.hitsCeiling(this.ball.x, this.ball.y, BALL_R)) this.die('spikes');
@@ -309,11 +336,11 @@ export class GameScene extends Phaser.Scene {
 
     for (const st of this.level.stars) {
       // hit circle matches the drawn star (radius ~16) + its floating offset
-      if (!st.taken && Math.hypot(st.x - bx, st.y + st.gfx.y - by) < BALL_R + 13) {
+      if (!st.taken && Math.hypot(st.x - bx, st.gfx.y - by) < BALL_R + 13) {
         st.taken = true;
         this.sc.stars++;
         sfx.star();
-        this.juice.burst(st.x, st.y + st.gfx.y, this.th.id === 'pop' ? 0xffffff : 0xffe14d, 16, 200);
+        this.juice.burst(st.x, st.gfx.y, this.th.id === 'pop' ? 0xffffff : 0xffe14d, 16, 200);
         this.popup(`+${this.sc.addBonus(50)}`, 'star', st.x, st.y);
         this.tweens.add({ targets: st.gfx, alpha: 0, scale: 1.6, duration: 250, onComplete: () => st.gfx.setVisible(false) });
       }

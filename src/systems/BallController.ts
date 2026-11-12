@@ -13,13 +13,19 @@ const STICK = 0.18;       // extra downward accel while on a surface (gravity is
 
 export class BallController {
   body: MatterJS.BodyType;
-  private gfx: Phaser.GameObjects.Graphics;
+  // Sprites instead of a Graphics object: baked once per theme+skin, then just moved/rotated each frame
+  private img!: Phaser.GameObjects.Image;
+  private glow1?: Phaser.GameObjects.Image;
+  private glow2?: Phaser.GameObjects.Image;
+  private shadow?: Phaser.GameObjects.Image;
   readonly startX: number;
   // previous physics state, for smooth interpolation between 60 Hz steps
   private px: number; private py: number; private pa = 0;
   /** Interpolated position actually shown on screen (camera follows this). */
   rx: number; ry: number;
-  skin = getBall();
+  private _skin = getBall();
+  get skin() { return this._skin; }
+  set skin(i: number) { this._skin = i; this.img?.setTexture(this.bake()); this.glow1?.setTint(this.color); this.glow2?.setTint(this.color); }
 
   constructor(private scene: Phaser.Scene, x: number, y: number, private theme: Theme) {
     this.startX = x;
@@ -31,7 +37,17 @@ export class BallController {
       label: 'ball',
     });
     scene.matter.body.setVelocity(this.body, { x: BASE_SPEED, y: 0 });
-    this.gfx = scene.add.graphics().setDepth(6);
+    if (!scene.textures.exists('juice-disc')) {
+      const g = scene.make.graphics({}, false);
+      g.fillStyle(0xffffff, 1).fillCircle(16, 16, 16);
+      g.generateTexture('juice-disc', 32, 32); g.destroy();
+    }
+    if (theme.ballGlow) {
+      this.glow1 = scene.add.image(x, y, 'juice-disc').setDepth(6).setScale((R + 12) / 16).setAlpha(0.12).setTint(this.color);
+      this.glow2 = scene.add.image(x, y, 'juice-disc').setDepth(6).setScale((R + 5) / 16).setAlpha(0.25).setTint(this.color);
+    }
+    if (theme.id === 'pop') this.shadow = scene.add.image(x + 3, y + 4, 'juice-disc').setDepth(6).setScale((R + 2) / 16).setTint(0x111111);
+    this.img = scene.add.image(x, y, this.bake()).setDepth(6);
     this.px = this.rx = x; this.py = this.ry = y;
   }
 
@@ -67,23 +83,30 @@ export class BallController {
     if (sp > SPEED_CAP) this.scene.matter.body.setVelocity(this.body, { x: (vx * SPEED_CAP) / sp, y: (vy * SPEED_CAP) / sp });
   }
 
+  /** Bake the ball (body, outline, ring, rotation mark) for the current theme + skin into a texture. */
+  private bake(): string {
+    const key = `ball-${this.theme.id}-${this._skin}`;
+    if (this.scene.textures.exists(key)) return key;
+    const th = this.theme, sk = BALLS[this._skin];
+    const color = sk.color ?? th.ball, mark = sk.mark ?? th.ballMark, c = 24;
+    const g = this.scene.make.graphics({}, false);
+    if (th.id === 'pop') { g.fillStyle(0x111111, 1).fillCircle(c, c, R + 2); g.fillStyle(color, 1).fillCircle(c, c, R - 2); }
+    else g.fillStyle(color, 1).fillCircle(c, c, R);
+    if (sk.ring !== undefined) g.lineStyle(2, sk.ring, 0.9).strokeCircle(c, c, R - 5);
+    g.lineStyle(3, mark, 0.85).lineBetween(c, c, c + R - (th.id === 'pop' ? 2 : 0), c);
+    g.generateTexture(key, 48, 48);
+    g.destroy();
+    return key;
+  }
+
   /** Render once per frame. alpha = how far we are between the last two physics steps (0..1). */
   draw(alpha: number) {
     const x = this.rx = this.px + (this.x - this.px) * alpha;
     const y = this.ry = this.py + (this.y - this.py) * alpha;
     const a = this.pa + (this.body.angle - this.pa) * alpha;
-    const th = this.theme, sk = BALLS[this.skin];
-    const color = sk.color ?? th.ball, mark = sk.mark ?? th.ballMark;
-    const g = this.gfx;
-    g.clear();
-    if (th.ballGlow) {
-      g.fillStyle(color, 0.12).fillCircle(x, y, R + 12);
-      g.fillStyle(color, 0.25).fillCircle(x, y, R + 5);
-    }
-    if (th.id === 'pop') g.fillStyle(0x111111, 1).fillCircle(x + 3, y + 4, R + 2);
-    g.fillStyle(color, 1).fillCircle(x, y, R);
-    if (sk.ring !== undefined) g.lineStyle(2, sk.ring, 0.9).strokeCircle(x, y, R - 5);
-    if (th.id === 'pop') g.lineStyle(4, 0x111111, 1).strokeCircle(x, y, R);
-    g.lineStyle(3, mark, 0.85).lineBetween(x, y, x + Math.cos(a) * R, y + Math.sin(a) * R);
+    this.img.setPosition(x, y).setRotation(a);
+    this.glow1?.setPosition(x, y);
+    this.glow2?.setPosition(x, y);
+    this.shadow?.setPosition(x + 3, y + 4);
   }
 }
