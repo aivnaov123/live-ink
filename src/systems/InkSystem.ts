@@ -1,11 +1,12 @@
 import Phaser from 'phaser';
 import type { Theme } from '../theme';
+import { LINES, getLine } from '../skins';
 
 // ---- Tuning knobs (play with these first!) ----
 export const INK_MAX = 1400;        // px of line you can hold
 const INK_REGEN = 260;              // px of ink regained per second while not drawing
 const INK_COST = 1;                 // ink per px drawn
-const MIN_STEP = 14;                // min distance between physics points
+const MIN_STEP = 22;                // min distance between physics points (fewer joints = smoother roll)
 const THICK = 12;                   // physics thickness of a line (thicker = less tunneling)
 const SOLID_MS = 2000;              // line fully solid for this long...
 const LIFE_MS = 3000;               // ...then fades and disappears at this age
@@ -19,7 +20,7 @@ interface Seg {
 }
 
 interface Pass { w: number; color: number; dx?: number; dy?: number }
-interface Run { pts: Phaser.Math.Vector2[]; a: number }
+interface Run { pts: Phaser.Math.Vector2[]; a: number; stroke: number }
 
 const mix = (c1: number, c2: number, t: number) => {
   const r = (c1 >> 16 & 255) + ((c2 >> 16 & 255) - (c1 >> 16 & 255)) * t;
@@ -53,26 +54,13 @@ export class InkSystem {
   private last: { x: number; y: number } | null = null;   // last physics point
   private cursor: { x: number; y: number } | null = null; // smoothed finger position
   private strokeId = 0;
-  private passes: Pass[];
+  private passCache = new Map<number, Pass[]>();
+  private bg: number;
+  lineSkin = getLine();
 
   constructor(private scene: Phaser.Scene, private theme: Theme) {
     this.gfx = scene.add.graphics().setDepth(5);
-    const bg = Phaser.Display.Color.HexStringToColor(theme.bg).color;
-    // All passes are OPAQUE colors (glow pre-mixed with the background), so
-    // overlapping pieces never stack into dark/bright beads.
-    this.passes = theme.id === 'neon'
-      ? [
-          { w: 26, color: mix(bg, theme.ink, 0.14) },
-          { w: 15, color: mix(bg, theme.ink, 0.38) },
-          { w: 7, color: theme.ink },
-          { w: 2.5, color: mix(theme.ink, 0xffffff, 0.8) },
-        ]
-      : [
-          { w: 15, color: 0x111111, dx: 3, dy: 4 }, // hard offset shadow
-          { w: 15, color: 0x111111 },               // thick black outline
-          { w: 8, color: theme.ink },
-          { w: 2, color: mix(theme.ink, 0xffffff, 0.55), dx: -1, dy: -2 }, // shine
-        ];
+    this.bg = Phaser.Display.Color.HexStringToColor(theme.bg).color;
 
     scene.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
       if (!this.enabled) return;
@@ -89,6 +77,61 @@ export class InkSystem {
   }
 
   get ratio() { return this.ink / INK_MAX; }
+
+  /** Stop the current stroke (pause, menu, death). */
+  cancel() { this.drawing = false; this.last = null; this.cursor = null; }
+
+  private strokeColor(stroke: number): number {
+    const c = LINES[this.lineSkin].color;
+    if (c === 'prism') return Phaser.Display.Color.HSVToRGB(((stroke * 67) % 360) / 360, 0.75, 1).color as number;
+    return c ?? this.theme.ink;
+  }
+
+  /** Render passes for a given ink color. All OPAQUE (glow pre-mixed with the background),
+   *  so overlapping pieces never stack into beads. */
+  private passesFor(color: number): Pass[] {
+    let p = this.passCache.get(color);
+    if (p) return p;
+    p = this.theme.id === 'neon'
+      ? [
+          { w: 26, color: mix(this.bg, color, 0.14) },
+          { w: 15, color: mix(this.bg, color, 0.38) },
+          { w: 7, color },
+          { w: 2.5, color: mix(color, 0xffffff, 0.8) },
+        ]
+      : [
+          { w: 15, color: 0x111111, dx: 3, dy: 4 }, // hard offset shadow
+          { w: 15, color: 0x111111 },               // thick black outline
+          { w: 8, color },
+          { w: 2, color: mix(color, 0xffffff, 0.55), dx: -1, dy: -2 }, // shine
+        ];
+    this.passCache.set(color, p);
+    return p;
+  }
+
+  /** Unit normal (pointing from the line toward the ball) of the closest touching ink segment, or null. */
+  contactNormal(x: number, y: number, r: number): { nx: number; ny: number } | null {
+    const lim = r + THICK / 2 + 3;
+    let best = lim, out: { nx: number; ny: number } | null = null;
+    for (const s of this.segs) {
+      const vx = s.bx - s.ax, vy = s.by - s.ay;
+      const t = Phaser.Math.Clamp(((x - s.ax) * vx + (y - s.ay) * vy) / (vx * vx + vy * vy || 1), 0, 1);
+      const dx = x - (s.ax + vx * t), dy = y - (s.ay + vy * t), d = Math.hypot(dx, dy);
+      if (d < best && d > 0) { best = d; out = { nx: dx / d, ny: dy / d }; }
+    }
+    return out;
+  }
+
+  /** Is a circle at (x,y) with radius r touching any live ink line? */
+  touches(x: number, y: number, r: number): boolean {
+    const lim = r + THICK / 2 + 3;
+    for (const s of this.segs) {
+      const vx = s.bx - s.ax, vy = s.by - s.ay;
+      const t = Phaser.Math.Clamp(((x - s.ax) * vx + (y - s.ay) * vy) / (vx * vx + vy * vy || 1), 0, 1);
+      if (Math.hypot(s.ax + vx * t - x, s.ay + vy * t - y) < lim) return true;
+    }
+    return false;
+  }
 
   private world(p: Phaser.Input.Pointer) {
     const v = this.scene.cameras.main.getWorldPoint(p.x, p.y);
@@ -138,19 +181,32 @@ export class InkSystem {
       const contiguous = cur && s.stroke === curStroke &&
         Math.abs(cur.pts[cur.pts.length - 1].x - s.ax) < 0.5 && Math.abs(cur.pts[cur.pts.length - 1].y - s.ay) < 0.5;
       if (!cur || !contiguous || cur.a !== a) {
-        cur = { pts: [new Phaser.Math.Vector2(s.ax, s.ay)], a };
+        cur = { pts: [new Phaser.Math.Vector2(s.ax, s.ay)], a, stroke: s.stroke };
         runs.push(cur);
         curStroke = s.stroke;
       }
       cur.pts.push(new Phaser.Math.Vector2(s.bx, s.by));
     }
 
+    // Live tail: the physics line grows in MIN_STEP chunks, so draw the remaining bit from the last
+    // point to the finger every frame — the line follows the finger smoothly even when drawing slowly.
+    if (this.drawing && this.last && this.cursor && this.ink >= MIN_STEP * INK_COST) { // no tail when out of ink
+      const tip = new Phaser.Math.Vector2(this.cursor.x, this.cursor.y);
+      const end = cur?.pts[cur.pts.length - 1];
+      if (cur && cur.a === 1 && curStroke === this.strokeId && end && Math.abs(end.x - this.last.x) < 0.5 && Math.abs(end.y - this.last.y) < 0.5) {
+        if (Math.hypot(tip.x - end.x, tip.y - end.y) > 1) cur.pts.push(tip);
+      } else if (Math.hypot(tip.x - this.last.x, tip.y - this.last.y) > 1) {
+        runs.push({ pts: [new Phaser.Math.Vector2(this.last.x, this.last.y), tip], a: 1, stroke: this.strokeId });
+      }
+    }
+
     const g = this.gfx;
     g.clear();
-    const smoothed = runs.map((r) => ({ a: r.a, pts: smooth(r.pts) }));
-    for (const pass of this.passes) {
-      const ox = pass.dx ?? 0, oy = pass.dy ?? 0;
+    const smoothed = runs.map((r) => ({ a: r.a, pts: smooth(r.pts), passes: this.passesFor(this.strokeColor(r.stroke)) }));
+    for (let pi = 0; pi < 4; pi++) {
       for (const r of smoothed) {
+        const pass = r.passes[pi];
+        const ox = pass.dx ?? 0, oy = pass.dy ?? 0;
         const pts = ox || oy ? r.pts.map((p) => new Phaser.Math.Vector2(p.x + ox, p.y + oy)) : r.pts;
         g.lineStyle(pass.w, pass.color, r.a);
         g.strokePoints(pts, false, false);
@@ -170,6 +226,7 @@ export class InkSystem {
         isStatic: true,
         angle: Math.atan2(by - ay, bx - ax),
         friction: 0.02,
+        restitution: 0,
         chamfer: { radius: THICK / 2 }, // capsule ends -> smooth joints
         label: 'ink',
       },

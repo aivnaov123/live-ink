@@ -26,6 +26,7 @@ const game = new Phaser.Game({
       positionIterations: 10,
       velocityIterations: 8,
       debug: false,
+      autoUpdate: false, // we step physics ourselves at a fixed 60 Hz (see GameScene.update)
     },
   },
   scene: [GameScene],
