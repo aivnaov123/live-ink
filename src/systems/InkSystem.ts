@@ -79,6 +79,7 @@ export class InkSystem {
   private strokeColor(stroke: number): number {
     const c = LINES[this.lineSkin].color;
     if (c === 'prism') return Phaser.Display.Color.HSVToRGB(((stroke * 67) % 360) / 360, 0.75, 1).color as number;
+    if (c === 'aurora') return stroke % 2 ? 0xb47cff : 0x5ef2c8;
     return c ?? this.theme.ink;
   }
 

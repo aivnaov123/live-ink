@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import type { Theme } from '../theme';
 import { sfx } from '../systems/Sfx';
 import { MenuBase } from './MenuBase';
+import { progress } from '../systems/Progress';
 
 export interface StartMenuOpts {
   theme: Theme;
@@ -17,6 +18,7 @@ export interface StartMenuOpts {
   onSound(): void;
   onBall(i: number): void;
   onLine(i: number): void;
+  onMissions(): void;
 }
 
 /** First screen: logo + "tap to play" over the frozen first level. One tap anywhere starts the run. */
@@ -54,7 +56,7 @@ export class StartMenu extends MenuBase {
     // --- logo: title + a hand-drawn ink stroke under it
     const g = this.fix(sc.add.graphics());
     const pts: Phaser.Math.Vector2[] = [];
-    for (let i = 0; i <= 24; i++) pts.push(new Phaser.Math.Vector2(120 + i * 12.5, 200 + Math.sin(i / 3.2) * 10 - i * 0.6));
+    for (let i = 0; i <= 24; i++) pts.push(new Phaser.Math.Vector2(120 + i * 12.5, 182 + Math.sin(i / 3.2) * 10 - i * 0.6));
     if (pop) {
       g.lineStyle(16, 0x111111, 1).strokePoints(pts.map((p) => new Phaser.Math.Vector2(p.x + 3, p.y + 4)));
       g.lineStyle(16, 0x111111, 1).strokePoints(pts);
@@ -64,32 +66,36 @@ export class StartMenu extends MenuBase {
       g.lineStyle(7, th.ink, 1).strokePoints(pts);
       g.lineStyle(2.5, 0xffffff, 0.85).strokePoints(pts);
     }
-    const title = this.text(W / 2, 128, 'LIVE INK', pop ? 76 : 82, pop ? '#FFFFFF' : '#EAF6FF', th.titleFont);
+    const title = this.text(W / 2, 112, 'LIVE INK', pop ? 76 : 82, pop ? '#FFFFFF' : '#EAF6FF', th.titleFont);
     if (pop) title.setStroke('#111111', 12).setShadow(6, 7, '#111111', 0, true, true).setAngle(-3);
     else title.setFontStyle('bold').setShadow(0, 0, th.accent, 22, false, true);
-    this.text(W / 2, 250, 'Draw the road. Before it fades.', 20, pop ? '#111111' : th.textDim);
+    this.text(W / 2, 230, 'Draw the road. Before it fades.', 20, pop ? '#111111' : th.textDim);
 
     // --- big pulsing call to action
-    const cta = this.text(W / 2, 335, 'TAP TO PLAY', 40, pop ? '#E5342B' : '#4DF3FF', th.titleFont);
+    const cta = this.text(W / 2, 305, 'TAP TO PLAY', 40, pop ? '#E5342B' : '#4DF3FF', th.titleFont);
     if (pop) cta.setStroke('#111111', 8).setShadow(4, 5, '#111111', 0, true, true);
     else cta.setShadow(0, 0, '#4DF3FF', 16, false, true);
     sc.tweens.add({ targets: cta, scale: cta.scaleX * 1.08, duration: 650, yoyo: true, repeat: -1, ease: 'Sine.inOut' });
 
     // --- mode
-    this.chip(W / 2 - 105, 430, 190, `Daily #${this.o.dailyNo}`, this.o.mode === 'daily', () => this.o.onMode('daily'));
-    this.chip(W / 2 + 105, 430, 190, 'Endless', this.o.mode === 'endless', () => this.o.onMode('endless'));
+    this.chip(W / 2 - 105, 390, 190, `Daily #${this.o.dailyNo}`, this.o.mode === 'daily', () => this.o.onMode('daily'));
+    this.chip(W / 2 + 105, 390, 190, 'Endless', this.o.mode === 'endless', () => this.o.onMode('endless'));
     const bestLine = this.o.record > 0
       ? `${this.o.mode === 'daily' ? 'Best today' : 'Best'}: ${this.o.best.toLocaleString('en-US')}   ·   Record: ${this.o.record.toLocaleString('en-US')}`
       : 'Same level for everyone, every day';
-    this.text(W / 2, 480, bestLine, 17, pop ? '#5c4a00' : th.textDim);
+    this.text(W / 2, 436, bestLine, 17, pop ? '#5c4a00' : th.textDim);
+
+    // --- daily missions + achievements
+    const ms = progress.missions(), done = ms.filter((m) => m.done).length, streak = progress.streakNow();
+    this.chip(W / 2, 488, 400, `🎯 Daily missions ${done}/3${streak ? `  ·  🔥 ${streak}` : ''}  ·  🏆 ${progress.achievementCount()}`, false, () => this.o.onMissions());
 
     // --- ball + line skins (shared with the pause menu)
-    this.skinRows(530, 650, this.o.ball, this.o.line, this.o.onBall, this.o.onLine);
+    this.skinRows(545, 662, this.o.ball, this.o.line, this.o.onBall, this.o.onLine);
 
     // --- style + sound
-    this.chip(W / 2 - 105, 845, 190, pop ? 'Style: Pop' : 'Style: Neon', false, () => this.o.onTheme());
-    this.chip(W / 2 + 105, 845, 190, sfx.muted ? '🔇 Sound off' : '🔊 Sound on', false, () => this.o.onSound());
+    this.chip(W / 2 - 105, 862, 190, pop ? 'Style: Pop' : 'Style: Neon', false, () => this.o.onTheme());
+    this.chip(W / 2 + 105, 862, 190, sfx.muted ? '🔇 Sound off' : '🔊 Sound on', false, () => this.o.onSound());
 
-    this.text(W / 2, 915, 'Draw with your finger or mouse  ·  Space to start', 15, pop ? '#5c4a00' : th.textDim);
+    this.text(W / 2, 925, 'Draw with your finger or mouse  ·  Space to start', 15, pop ? '#5c4a00' : th.textDim);
   }
 }

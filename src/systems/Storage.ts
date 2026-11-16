@@ -15,3 +15,20 @@ export function save(key: string, value: number): void {
     /* ignore */
   }
 }
+
+export function loadJSON<T>(key: string, fallback: T): T {
+  try {
+    const v = localStorage.getItem(key);
+    return v === null ? fallback : { ...fallback, ...JSON.parse(v) };
+  } catch {
+    return fallback;
+  }
+}
+
+export function saveJSON(key: string, value: unknown): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    /* ignore */
+  }
+}

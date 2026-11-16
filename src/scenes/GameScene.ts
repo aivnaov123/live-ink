@@ -7,13 +7,16 @@ import { dailyNumber, dailySeed, mulberry32, todayKey } from '../systems/DailySe
 import { load, save } from '../systems/Storage';
 import { currentTheme, toggleTheme, type Theme } from '../theme';
 import { PauseMenu } from '../ui/PauseMenu';
+import { missionRow } from '../ui/missionRow';
 import { StartMenu } from '../ui/StartMenu';
+import { MissionsPanel } from '../ui/MissionsPanel';
 import { designFit } from '../ui/fit';
 import { view, TEX } from '../res';
 import { inkLifeMs, SPEED_MILESTONES } from '../systems/Difficulty';
 import { sfx } from '../systems/Sfx';
 import { Juice } from '../systems/Juice';
-import { setBall, setLine, getRecord, setRecord, newlyUnlocked } from '../skins';
+import { setBall, setLine, getRecord, setRecord, newlyUnlocked, BALLS, LINES } from '../skins';
+import { progress, type ProgressEvent } from '../systems/Progress';
 
 type Mode = 'daily' | 'endless';
 const PX_PER_M = 40;
@@ -67,7 +70,7 @@ export class GameScene extends Phaser.Scene {
   /** Start menu shows on the first run of the session (and when changing mode/style from it). */
   private static startedOnce = false;
   private waiting = false;
-  private startMenu?: StartMenu;
+  private startMenu?: StartMenu | MissionsPanel;
   private showStart = false;
 
   init(data: { mode?: Mode; start?: boolean }) {
@@ -88,6 +91,8 @@ export class GameScene extends Phaser.Scene {
     // reset per-run state FIRST (scene.restart reuses this object)
     this.gameTime = 0; this.paused = false; this.menu = undefined; this.milestone = 0; this.parallax = []; this.hudAt = -1e9;
     this.over = undefined; this.overObjs = []; this.sunburst = undefined; this.halftone = undefined; this.startMenu = undefined;
+    this.toastN = 0;
+    progress.startRun();
     this.th = currentTheme();
     const th = this.th;
     const cam = this.cameras.main;
@@ -336,12 +341,13 @@ export class GameScene extends Phaser.Scene {
 
     // Mid-run unlock announcements
     if (this.sc.total > this.announced) {
-      newlyUnlocked(this.announced, this.sc.total).forEach((name, i) => this.unlockToast(name, i));
+      newlyUnlocked(this.announced, this.sc.total).forEach((name) => this.unlockToast(name));
       this.announced = this.sc.total;
     }
     // Text re-renders are costly on phones: refresh the HUD ~12x per second, not every frame
     if (this.gameTime - this.hudAt >= 80) {
       this.hudAt = this.gameTime;
+      this.showProgressEvents(progress.live(this.meters, this.sc.total, this.sc.mult));
       this.score.setText(this.sc.total.toLocaleString('en-US'));
       this.sub.setText(`${this.meters} m  ·  ${this.mode === 'daily' ? `DAILY #${dailyNumber()}` : 'ENDLESS'}  ·  best ${this.best.toLocaleString('en-US')}`);
       this.multText.setText(this.sc.mult > 1 ? `x${this.sc.mult}` : '').setX(this.score.x + this.score.width + 14);
@@ -380,6 +386,7 @@ export class GameScene extends Phaser.Scene {
     if (plat && plat !== this.lastPlat && by < plat.y + 4) {
       if (this.lastPlat && this.usedInk) {
         this.sc.bridge(time);
+        progress.bridge();
         this.popup(this.sc.mult > 1 ? `BRIDGE  x${this.sc.mult}` : 'BRIDGE', 'big');
         sfx.bridge(this.sc.mult);
         const bc = this.ink.currentColor();
@@ -409,6 +416,7 @@ export class GameScene extends Phaser.Scene {
       if (!st.taken && Math.hypot(st.x - bx, st.gfx.y - by) < BALL_R + 13) {
         st.taken = true;
         this.sc.stars++;
+        progress.star();
         sfx.star();
         this.juice.burst(st.x, st.gfx.y, this.th.id === 'pop' ? 0xffffff : 0xffe14d, 16, 200);
         this.popup(`+${this.sc.addBonus(50)}`, 'star', st.x, st.y);
@@ -463,17 +471,37 @@ export class GameScene extends Phaser.Scene {
     this.tweens.add({ targets: all, alpha: 0, delay: 2200, duration: 400, onComplete: () => all.forEach((o) => o.destroy()) });
   }
 
-  private unlockToast(name: string, i = 0) {
-    if (i === 0) sfx.jingle();
-    const th = this.th, W = this.vw;
-    const y = 150 + i * 58;
-    const t = this.add.text(W / 2, y, `UNLOCKED: ${name}!`, {
-      fontFamily: th.titleFont, fontSize: '26px', fontStyle: 'bold', color: th.id === 'pop' ? '#FFFFFF' : '#FFE14D',
-      backgroundColor: th.id === 'pop' ? '#2B59FF' : '#141b33', padding: { x: 16, y: 10 },
+  private unlockToast(name: string) { this.toast(`UNLOCKED: ${name}!`, 'unlock'); }
+
+  /** Stacking banner at the top of the screen (unlocks, missions, achievements). */
+  private toastN = 0;
+  private toast(text: string, kind: 'unlock' | 'mission' | 'achievement') {
+    if (this.toastN === 0) sfx.jingle();
+    const th = this.th, W = this.vw, pop = th.id === 'pop';
+    const y = 150 + this.toastN * 54;
+    this.toastN++;
+    const bg = kind === 'mission' ? (pop ? '#111111' : '#0f2a22') : kind === 'achievement' ? (pop ? '#E5342B' : '#2a1030') : (pop ? '#2B59FF' : '#141b33');
+    const color = kind === 'mission' ? (pop ? '#FFFFFF' : '#5EF2C8') : kind === 'achievement' ? (pop ? '#FFFFFF' : '#FF4FD8') : (pop ? '#FFFFFF' : '#FFE14D');
+    const t = this.add.text(W / 2, y, text, {
+      fontFamily: th.titleFont, fontSize: text.length > 26 ? '19px' : '24px', fontStyle: 'bold', color,
+      backgroundColor: bg, padding: { x: 14, y: 9 }, align: 'center', wordWrap: { width: W - 60 },
     }).setOrigin(0.5).setScrollFactor(0).setDepth(22);
-    if (th.id === 'pop') t.setStroke('#111111', 5);
+    if (pop) t.setStroke('#111111', 4);
     this.tweens.add({ targets: t, scale: { from: 0.6, to: 1 }, duration: 300, ease: 'Back.out' });
-    this.tweens.add({ targets: t, alpha: 0, y: y - 30, delay: 2200 + i * 300, duration: 500, onComplete: () => t.destroy() });
+    this.tweens.add({ targets: t, alpha: 0, y: y - 30, delay: 2400, duration: 500, onComplete: () => { t.destroy(); this.toastN = Math.max(0, this.toastN - 1); } });
+  }
+
+  private showProgressEvents(events: ProgressEvent[]) {
+    for (const e of events) {
+      if (e.kind === 'mission') this.toast(`✓ Mission: ${e.text}`, 'mission');
+      else if (e.kind === 'allMissions') this.toast(e.text, 'mission');
+      else {
+        this.toast(`🏆 ${e.text}`, 'achievement');
+        // reward skins unlocked by this achievement
+        for (const sk of [...BALLS.map((b) => ({ ...b, kind: 'ball' })), ...LINES.map((l) => ({ ...l, kind: 'line' }))])
+          if (sk.ach === e.id) this.toast(`UNLOCKED: ${sk.name} ${sk.kind}!`, 'unlock');
+      }
+    }
   }
 
   private setInkBarVisible(v: boolean) {
@@ -493,6 +521,7 @@ export class GameScene extends Phaser.Scene {
       ball: this.ball.skin, line: this.ink.lineSkin,
       onBall: (i) => { setBall(i); this.ball.skin = i; this.ball.draw(1); this.openStart(); },
       onLine: (i) => { setLine(i); this.ink.lineSkin = i; this.openStart(); },
+      onMissions: () => { this.startMenu?.destroy(); this.startMenu = new MissionsPanel(this, this.th, () => this.openStart()); },
     });
   }
 
@@ -573,6 +602,9 @@ export class GameScene extends Phaser.Scene {
     setRecord(pts);
     const ptsStr = pts.toLocaleString('en-US');
 
+    // final values (the HUD tick may not have seen the last few meters), then count the run
+    this.showProgressEvents(progress.live(m, pts, this.sc.maxMult));
+    this.showProgressEvents(progress.endRun());
     this.over = { cause, m, ptsStr, isBest, unlocked };
     this.buildGameOver();
   }
@@ -584,7 +616,7 @@ export class GameScene extends Phaser.Scene {
     if (!this.over) return;
     const th = this.th, { cause, m, ptsStr, isBest, unlocked } = this.over;
     const F = designFit(this);
-    const W = 540, H = 960;
+    const W = 540;
     // (no container: input hit-tests on fixed-to-screen children inside containers are offset)
     const fix = <T extends Phaser.GameObjects.GameObject & { setScrollFactor(x: number): T; setDepth(d: number): T }>(o: T, raw = false) => {
       if (!raw) F.place(o);
@@ -595,21 +627,27 @@ export class GameScene extends Phaser.Scene {
       fix(this.add.text(W / 2, y, s, { fontFamily: font, fontSize: `${size}px`, color, align: 'center' }).setOrigin(0.5));
 
     fix(this.add.rectangle(F.W / 2, F.H / 2, F.W, F.H, th.overlay, th.overlayAlpha), true);
-    const title = t(H * 0.27, cause === 'spikes' ? (th.id === 'pop' ? 'OUCH! SPIKES!' : 'Spiked.') : th.deathTitle, th.id === 'neon' ? 54 : 44, th.id === 'pop' ? '#E5342B' : th.text, th.titleFont);
+    const title = t(150, cause === 'spikes' ? (th.id === 'pop' ? 'OUCH! SPIKES!' : 'Spiked.') : th.deathTitle, th.id === 'neon' ? 54 : 44, th.id === 'pop' ? '#E5342B' : th.text, th.titleFont);
     if (th.id === 'pop') title.setStroke('#111111', 8).setShadow(5, 6, '#111111', 0, true, true).setAngle(-3);
 
     if (th.id === 'pop') {
       const card = fix(this.add.graphics());
-      card.fillStyle(0x111111, 1).fillRoundedRect(W / 2 - 130 + 6, H * 0.4 - 70 + 7, 260, 140, 16);
-      card.fillStyle(0xffffff, 1).fillRoundedRect(W / 2 - 130, H * 0.4 - 70, 260, 140, 16);
-      card.lineStyle(5, 0x111111, 1).strokeRoundedRect(W / 2 - 130, H * 0.4 - 70, 260, 140, 16);
-      t(H * 0.4, ptsStr, 60, '#2B59FF', th.titleFont);
+      card.fillStyle(0x111111, 1).fillRoundedRect(W / 2 - 130 + 6, 252 - 60 + 7, 260, 120, 16);
+      card.fillStyle(0xffffff, 1).fillRoundedRect(W / 2 - 130, 252 - 60, 260, 120, 16);
+      card.lineStyle(5, 0x111111, 1).strokeRoundedRect(W / 2 - 130, 252 - 60, 260, 120, 16);
+      t(252, ptsStr, 58, '#2B59FF', th.titleFont);
     } else {
-      t(H * 0.4, ptsStr, 76, th.text, th.titleFont).setShadow(0, 0, th.accent, 18, false, true);
+      t(252, ptsStr, 76, th.text, th.titleFont).setShadow(0, 0, th.accent, 18, false, true);
     }
-    t(H * 0.495, `${m} m  ·  ${this.sc.bridges} bridge${this.sc.bridges === 1 ? "" : "s"}  ·  max x${this.sc.maxMult}  ·  ★ ${this.sc.stars}`, 18, th.textDim);
-    t(H * 0.535, isBest ? 'NEW BEST!' : `best ${this.best.toLocaleString('en-US')}`, 24, isBest ? th.accent : th.textDim);
-    if (unlocked.length) t(H * 0.565, `🔓 ${unlocked.join(' + ')} unlocked!`, 18, th.id === 'pop' ? '#2B59FF' : '#FFE14D');
+    t(338, `${m} m  ·  ${this.sc.bridges} bridge${this.sc.bridges === 1 ? "" : "s"}  ·  max x${this.sc.maxMult}  ·  ★ ${this.sc.stars}`, 18, th.textDim);
+    t(372, isBest ? 'NEW BEST!' : `best ${this.best.toLocaleString('en-US')}`, 24, isBest ? th.accent : th.textDim);
+    if (unlocked.length) t(402, `🔓 ${unlocked.join(' + ')} unlocked!`, 18, th.id === 'pop' ? '#2B59FF' : '#FFE14D');
+
+    // daily missions: the "one more run" hook right where the player decides to retry
+    const ms = progress.missions(), doneN = ms.filter((x) => x.done).length;
+    const streak = progress.streakNow();
+    t(438, `DAILY MISSIONS  ${doneN}/3${streak > 0 ? `   ·   🔥 ${streak}-day streak` : ''}`, 15, th.textDim);
+    ms.forEach((mi, i) => missionRow(this, fix as unknown as <T extends Phaser.GameObjects.GameObject>(o: T) => T, th, 474 + i * 40, mi));
 
     const button = (y: number, label: string, primary: boolean, fn: () => void) => {
       const g = fix(this.add.graphics());
@@ -624,18 +662,18 @@ export class GameScene extends Phaser.Scene {
       const hit = fix(this.add.rectangle(W / 2, y, 300, 68, 0, 0).setInteractive({ useHandCursor: true }));
       hit.on('pointerup', () => { sfx.click(); fn(); });
     };
-    button(H * 0.62, th.id === 'pop' ? 'PLAY AGAIN' : 'Try again', true, () => this.scene.restart({ mode: this.mode }));
-    button(H * 0.71, this.mode === 'daily' ? 'Play endless' : 'Play daily', false, () =>
+    button(630, th.id === 'pop' ? 'PLAY AGAIN' : 'Try again', true, () => this.scene.restart({ mode: this.mode }));
+    button(712, this.mode === 'daily' ? 'Play endless' : 'Play daily', false, () =>
       this.scene.restart({ mode: this.mode === 'daily' ? 'endless' : 'daily' }));
     if (this.mode === 'daily') {
       const filled = Math.min(10, this.sc.bridges);
       const [on, off] = th.id === 'neon' ? ['🟦', '⬛'] : ['🟨', '⬜'];
-      button(H * 0.8, 'Copy result', false, () => {
+      button(794, 'Copy result', false, () => {
         const text = `Live Ink Daily #${dailyNumber()} — ${ptsStr} pts (max x${this.sc.maxMult}, ★${this.sc.stars})\n${on.repeat(filled)}${off.repeat(10 - filled)}`;
         navigator.clipboard?.writeText(text).catch(() => {});
       });
     }
-    const sw = t(H * 0.9, th.id === 'neon' ? 'Switch style → Pop' : 'Switch style → Neon', 18, th.textDim);
+    const sw = t(880, th.id === 'neon' ? 'Switch style → Pop' : 'Switch style → Neon', 18, th.textDim);
     sw.setInteractive({ useHandCursor: true }).on('pointerup', () => { toggleTheme(); this.scene.restart({ mode: this.mode }); });
   }
 }

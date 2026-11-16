@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import type { Theme } from '../theme';
-import { BALLS, LINES, getRecord, isUnlocked } from '../skins';
+import { BALLS, LINES, getRecord, isUnlocked, unlockHint } from '../skins';
 import { sfx } from '../systems/Sfx';
 import { designFit } from './fit';
 
@@ -40,10 +40,10 @@ export abstract class MenuBase {
   }
 
   /** Small selectable tile; draws its content via `paint`. Locked tiles explain how to unlock. */
-  private tile(cx: number, cy: number, selected: boolean, paint: (g: Phaser.GameObjects.Graphics) => void, fn: () => void, lockAt = 0) {
+  private tile(cx: number, cy: number, selected: boolean, paint: (g: Phaser.GameObjects.Graphics) => void, fn: () => void, lock?: { label: string; hint: string }) {
     const th = this.theme;
     const g = this.fix(this.scene.add.graphics());
-    const s = 64, x = cx - s / 2, y = cy - s / 2;
+    const s = 62, x = cx - s / 2, y = cy - s / 2;
     if (th.id === 'pop') {
       g.fillStyle(0x111111, 1).fillRoundedRect(x + 4, y + 5, s, s, 10);
       g.fillStyle(0xffffff, 1).fillRoundedRect(x, y, s, s, 10);
@@ -53,24 +53,27 @@ export abstract class MenuBase {
       g.lineStyle(selected ? 3 : 1, selected ? 0xffe14d : 0x2a3a66, 1).strokeRoundedRect(x, y, s, s, 12);
     }
     paint(g);
-    if (lockAt > 0) {
+    if (lock) {
       g.fillStyle(th.id === 'pop' ? 0xffffff : 0x070a14, 0.72).fillRoundedRect(x, y, s, s, 10);
       const lc = th.id === 'pop' ? 0x111111 : 0x9aa4c4;
       g.lineStyle(3, lc, 1).strokeCircle(cx, cy - 8, 6);
       g.fillStyle(lc, 1).fillRoundedRect(cx - 9, cy - 6, 18, 14, 3);
-      this.text(cx, cy + 20, lockAt.toLocaleString('en-US'), 13, th.id === 'pop' ? '#111111' : '#9aa4c4');
-      this.hit(cx, cy, s + 8, s + 8, () => this.flash(`Score ${lockAt.toLocaleString('en-US')} to unlock`));
+      this.text(cx, cy + 20, lock.label, 13, th.id === 'pop' ? '#111111' : '#9aa4c4');
+      this.hit(cx, cy, s + 6, s + 6, () => this.flash(lock.hint));
       return;
     }
-    this.hit(cx, cy, s + 8, s + 8, fn);
+    this.hit(cx, cy, s + 6, s + 6, fn);
   }
 
   /** Ball + line skin rows (labels at yBall/yLine, tiles 55px below), plus the best-score / unlock hint. */
   protected skinRows(yBall: number, yLine: number, ball: number, line: number, onBall: (i: number) => void, onLine: (i: number) => void) {
     const th = this.theme, W = 540, rec = getRecord();
+    const lockOf = (sk: { unlock: number; ach?: string }) => isUnlocked(sk, rec) ? undefined
+      : { label: sk.ach ? '🏆' : sk.unlock.toLocaleString('en-US'), hint: unlockHint(sk) };
+    const colX = (i: number, n: number) => W / 2 + (i - (n - 1) / 2) * 76;
     this.text(W / 2, yBall, `BALL  ·  ${BALLS[ball].name}`, 16, th.textDim);
     BALLS.forEach((b, i) => {
-      const cx = W / 2 + (i - 2) * 84, cy = yBall + 55;
+      const cx = colX(i, BALLS.length), cy = yBall + 55;
       this.tile(cx, cy, i === ball, (g) => {
         const c = b.color ?? th.ball;
         if (th.id === 'pop') g.fillStyle(0x111111, 1).fillCircle(cx + 2, cy + 3, 17);
@@ -78,14 +81,14 @@ export abstract class MenuBase {
         if (b.ring !== undefined) g.lineStyle(2, b.ring, 0.9).strokeCircle(cx, cy, 11);
         if (th.id === 'pop') g.lineStyle(3, 0x111111, 1).strokeCircle(cx, cy, 16);
         g.lineStyle(3, b.mark ?? th.ballMark, 0.85).lineBetween(cx, cy, cx + 11, cy - 11);
-      }, () => onBall(i), isUnlocked(b, rec) ? 0 : b.unlock);
+      }, () => onBall(i), lockOf(b));
     });
 
     this.text(W / 2, yLine, `LINE  ·  ${LINES[line].name}`, 16, th.textDim);
     LINES.forEach((l, i) => {
-      const cx = W / 2 + (i - 2) * 84, cy = yLine + 55;
+      const cx = colX(i, LINES.length), cy = yLine + 55;
       this.tile(cx, cy, i === line, (g) => {
-        const cols = l.color === 'prism' ? [0xff4f6d, 0xffd23f, 0x4dff8a, 0x4d9bff] : [l.color ?? th.ink];
+        const cols = l.color === 'prism' ? [0xff4f6d, 0xffd23f, 0x4dff8a, 0x4d9bff] : l.color === 'aurora' ? [0x5ef2c8, 0xb47cff] : [l.color ?? th.ink];
         const seg = 40 / cols.length;
         if (cols.length > 1) cols.forEach((c, k) => {
           const x0 = cx - 20 + k * seg;
@@ -96,10 +99,10 @@ export abstract class MenuBase {
           if (th.id === 'pop') g.lineStyle(11, 0x111111, 1).lineBetween(cx - 20, cy + 10, cx + 20, cy - 10);
           g.lineStyle(6, cols[0], 1).lineBetween(cx - 20, cy + 10, cx + 20, cy - 10);
         }
-      }, () => onLine(i), isUnlocked(l, rec) ? 0 : l.unlock);
+      }, () => onLine(i), lockOf(l));
     });
-    const next = [...BALLS, ...LINES].map((s) => s.unlock).filter((u) => u > rec).sort((a, b) => a - b)[0];
-    this.text(W / 2, yLine + 117, next ? `Score ${next.toLocaleString('en-US')} to unlock more` : 'Everything unlocked!', 14, th.textDim);
+    const next = [...BALLS, ...LINES].filter((s) => !s.ach).map((s) => s.unlock).filter((u) => u > rec).sort((a, b) => a - b)[0];
+    this.text(W / 2, yLine + 117, next ? `Score ${next.toLocaleString('en-US')} to unlock more  ·  🏆 achievements unlock the rest` : '🏆 Achievements unlock the rest', 14, th.textDim);
     this.flashText = this.text(W / 2, yLine + 140, '', 16, th.id === 'pop' ? '#E5342B' : '#FFE14D').setAlpha(0);
   }
 }
